@@ -25,6 +25,9 @@ struct NetVal {
     driven: usize,
     /// Validity flag (FALSE when the driving function was not executed).
     valid: Option<Loc>,
+    /// The variable carried by the net: a function block instance, or the
+    /// variable of an in-out connection (figure 12 c).
+    reference: Option<Expr>,
 }
 
 /// Network after merging continuations through connectors.
@@ -76,7 +79,13 @@ impl<'c, 's> Lowerer<'c, 's> {
             if let Some(l) = &u.label {
                 out.push(St::Label(labels[&l.key()]));
             }
+            let start = out.len();
             self.network(out, u, &labels, None);
+            if std::env::var("DBG_GRAPHIC").is_ok() {
+                for (i, n) in u.nodes.iter().enumerate() { eprintln!("NODE {} {:?} pos={:?}", i, n.kind, n.pos); }
+                for n in &u.nets { eprintln!("NET {:?} -> {:?}", n.drivers.iter().map(|p| (p.node, p.pin)).collect::<Vec<_>>(), n.sinks.iter().map(|p| (p.node, p.pin)).collect::<Vec<_>>()); }
+                for st in &out[start..] { eprintln!("ST {:?}", st); }
+            }
         }
     }
 
@@ -189,6 +198,20 @@ impl<'c, 's> Lowerer<'c, 's> {
                     }
                 }
             }
+            // nets driven by the same output pin carry the same signal
+            for a in 0..list.len() {
+                for b in a + 1..list.len() {
+                    if list[b].drivers.iter().any(|d| list[a].drivers.contains(d)) {
+                        let moved = std::mem::take(&mut list[b]);
+                        for d in moved.drivers {
+                            if !list[a].drivers.contains(&d) {
+                                list[a].drivers.push(d);
+                            }
+                        }
+                        list[a].sinks.extend(moved.sinks);
+                    }
+                }
+            }
             list.retain(|n| !n.drivers.is_empty() || !n.sinks.is_empty());
             units.push(Unit { label, nodes, nets: list });
         }
@@ -236,6 +259,39 @@ impl<'c, 's> Lowerer<'c, 's> {
                 let mut broken = false;
                 let mut cand = remaining.clone();
                 cand.sort_by_key(|i| u.nodes[*i].pos);
+                // An explicit loop through a variable written in the middle
+                // of a line (figure 23 a): the elements after the variable
+                // use its current value; it is assigned at the end of the loop.
+                'explicit: for &i in &cand {
+                    for (&(node, _), &ni) in input_net.iter() {
+                        if node != i || vals[ni].var.is_some() {
+                            continue;
+                        }
+                        let var = u.nets[ni].drivers.iter().find_map(|d| match &u.nodes[d.node].kind {
+                            NodeKind::Sink(e) if !done[d.node] => Some((d.node, e.clone())),
+                            _ => None,
+                        });
+                        if let Some((sink, e)) = var {
+                            let v = self.expr(&e, None);
+                            let t = v.ty;
+                            if self.cx.types.scalar(t).is_none() {
+                                continue;
+                            }
+                            let loc = self.temp_typed(t);
+                            self.assign(out, loc.clone(), t, v, e.span);
+                            let name = self.synth_var("N", loc.clone(), t);
+                            vals[ni] = NetVal { var: Some(name), loc: Some(loc), ty: Some(t), driven: 0, valid: None, reference: None };
+                            for s in &u.nets[ni].sinks {
+                                deps[s.node].remove(&sink);
+                            }
+                            broken = true;
+                            break 'explicit;
+                        }
+                    }
+                }
+                if broken {
+                    continue;
+                }
                 'outer: for &i in &cand {
                     for (&(node, pin), &ni) in input_net.iter() {
                         if node != i || vals[ni].var.is_some() {
@@ -257,7 +313,7 @@ impl<'c, 's> Lowerer<'c, 's> {
                                 let loc = self.temp_typed(t);
                                 self.assign(out, loc.clone(), t, v, e.span);
                                 let name = self.synth_var("N", loc.clone(), t);
-                                vals[ni] = NetVal { var: Some(name), loc: Some(loc), ty: Some(t), driven: 0, valid: None };
+                                vals[ni] = NetVal { var: Some(name), loc: Some(loc), ty: Some(t), driven: 0, valid: None, reference: None };
                                 for d in &u.nets[ni].drivers {
                                     deps[i].remove(&d.node);
                                 }
@@ -313,7 +369,7 @@ impl<'c, 's> Lowerer<'c, 's> {
             let loc = self.temp_typed(t);
             let name = self.synth_var("N", loc.clone(), t);
             self.assign(out, loc.clone(), t, v, span);
-            vals[ni] = NetVal { var: Some(name), loc: Some(loc), ty: Some(t), driven: 1, valid: None };
+            vals[ni] = NetVal { var: Some(name), loc: Some(loc), ty: Some(t), driven: 1, valid: None, reference: None };
             return;
         }
         let (loc, t) = (vals[ni].loc.clone().unwrap(), vals[ni].ty.unwrap());
@@ -338,7 +394,7 @@ impl<'c, 's> Lowerer<'c, 's> {
         }
         let loc = self.temp_typed(ty);
         let name = self.synth_var("N", loc.clone(), ty);
-        vals[ni] = NetVal { var: Some(name.clone()), loc: Some(loc), ty: Some(ty), driven: 0, valid: None };
+        vals[ni] = NetVal { var: Some(name.clone()), loc: Some(loc), ty: Some(ty), driven: 0, valid: None, reference: None };
         name
     }
 
@@ -388,9 +444,19 @@ impl<'c, 's> Lowerer<'c, 's> {
             NodeKind::Source(e) => {
                 if let Some(&ni) = output_net.get(&(idx, 0)) {
                     let v = self.expr(e, None);
+                    if self.cx.types.instance_pou(v.ty).is_some() {
+                        vals[ni].reference = Some(e.clone());
+                        return;
+                    }
+                    let power = u.nets[ni].sinks.iter().any(|s| {
+                        matches!(
+                            u.nodes[s.node].kind,
+                            NodeKind::Contact { .. } | NodeKind::Coil { .. } | NodeKind::Jump(_) | NodeKind::Return | NodeKind::RightRail | NodeKind::ActionBlock { .. }
+                        )
+                    });
                     let v = match &v.kind {
                         // a literal feeding power flow is BOOL
-                        VK::IntLit(_) if self.is_ld(u) => {
+                        VK::IntLit(_) if power => {
                             let ex = self.coerce(v, bool_ty, e.span);
                             V::val(ex, bool_ty)
                         }
@@ -417,6 +483,12 @@ impl<'c, 's> Lowerer<'c, 's> {
                 match valid {
                     Some(f) => out.push(St::If(Ex::Load(Ty::Bool, f), code, vec![])),
                     None => out.extend(code),
+                }
+                // a variable in the middle of a line (`--PTR--`) also drives
+                // the rest of the line with its new value
+                if let Some(&no) = output_net.get(&(idx, 0)) {
+                    let v = self.expr(e, None);
+                    self.drive(out, no, v, vals, u, span);
                 }
             }
             NodeKind::Contact { var, kind } => {
@@ -564,20 +636,53 @@ impl<'c, 's> Lowerer<'c, 's> {
             None => vec![],
         };
         let mut has_en = false;
+        let in_outs: Vec<String> = match pou {
+            Some(p) => self.cx.pous[p].vars.iter().filter(|v| v.kind == VKind::InOut).map(|v| v.name.clone()).collect(),
+            None => vec![],
+        };
+        // actual variables of in-out connections, by name
+        let mut in_out_actual: HashMap<String, Expr> = HashMap::new();
         for (k, pin) in inputs.iter().enumerate() {
-            let Some((ex, t, var)) = self.pin_value(idx, k, input_net, vals) else {
-                if pin.name.is_none() && !is_fb {
-                    positional += 1;
-                }
-                continue;
+            let ni = input_net.get(&(idx, k)).copied();
+            // A variable or literal connected to the input is passed as such
+            // (a literal then takes the type of the input as in the textual
+            // languages); so is the variable carried by an in-out connection.
+            let direct = ni.and_then(|ni| match u.nets[ni].drivers.as_slice() {
+                [d] => match &u.nodes[d.node].kind {
+                    NodeKind::Source(e) => Some(e.clone()),
+                    _ => None,
+                },
+                _ => None,
+            });
+            let direct = direct.or_else(|| ni.and_then(|ni| vals[ni].reference.clone()));
+            let in_out = pin.name.as_ref().map(|n| in_outs.contains(&n.key())).unwrap_or(false);
+            let (mut value, t) = match &direct {
+                Some(e) => (e.clone(), None),
+                None => match self.pin_value(idx, k, input_net, vals) {
+                    Some((_, t, var)) => (Self::synth_expr(&var, pin.span), Some(t)),
+                    None => {
+                        if pin.name.is_none() && !is_fb {
+                            positional += 1;
+                        }
+                        continue;
+                    }
+                },
             };
-            let _ = (ex, t);
+            if in_out {
+                if direct.is_none() || direct.as_ref().map(is_literal).unwrap_or(false) {
+                    self.cx.annex_e(
+                        "2.5.1.1",
+                        format!("the in-out variable {} shall be connected to a variable or to the in-out variable of another block (figure 12)", pin.name.as_ref().unwrap()),
+                        pin.span,
+                    );
+                }
+                in_out_actual.insert(pin.name.as_ref().unwrap().key(), value.clone());
+            }
             if pin.edge.is_some() {
                 self.cx.error_clause("2.5.2.2", "edge markers can only be used in graphical declarations of function block inputs", pin.span);
             }
-            let mut value = Self::synth_expr(&var, pin.span);
             if pin.negated {
-                if !self.cx.types.is_bool(t) {
+                if t.map(|t| !self.cx.types.is_bool(t)).unwrap_or(false) {
                     self.cx.error_clause("2.5.1.1", "graphical negation can only be applied to BOOL signals (table 19)", pin.span);
                 }
                 value = Expr { kind: ExprKind::Unary { op: ast::UnaryOp::Not, operand: Box::new(value) }, span: pin.span };
@@ -665,6 +770,10 @@ impl<'c, 's> Lowerer<'c, 's> {
                         }
                     }
                 };
+                if let Some(actual) = in_out_actual.get(&name).cloned() {
+                    self.in_out_output(out, u, ni, actual, vals, pin.span);
+                    continue;
+                }
                 let v = if name == "ENO" {
                     match &eno_loc {
                         Some(l) => V::val(Ex::Load(Ty::Bool, l.clone()), bool_ty),
@@ -683,11 +792,11 @@ impl<'c, 's> Lowerer<'c, 's> {
             self.cx.error(format!("{} is a function; functions have no instance name", fname), span);
         }
         // Function: user-declared or standard.
-        let result_pin = outputs.iter().position(|p| p.name.as_ref().map(|n| !n.is("ENO")).unwrap_or(true) && !matches!(&p.name, Some(n) if pou.map(|pi| self.cx.pous[pi].var(&n.key()).map(|v| v.kind == VKind::Output).unwrap_or(false)).unwrap_or(false)));
+        let result_pin = outputs.iter().position(|p| p.name.as_ref().map(|n| !n.is("ENO")).unwrap_or(true) && !matches!(&p.name, Some(n) if pou.map(|pi| self.cx.pous[pi].var(&n.key()).map(|v| matches!(v.kind, VKind::Output | VKind::InOut)).unwrap_or(false)).unwrap_or(false)));
         // named function outputs
         for (k, pin) in outputs.iter().enumerate() {
             let Some(name) = &pin.name else { continue };
-            if name.is("ENO") || Some(k) == result_pin {
+            if name.is("ENO") || Some(k) == result_pin || in_outs.contains(&name.key()) {
                 continue;
             }
             let Some(&ni) = output_net.get(&(idx, k)) else { continue };
@@ -712,6 +821,7 @@ impl<'c, 's> Lowerer<'c, 's> {
                 _ => None,
             })
         });
+        if std::env::var("DBG_GRAPHIC").is_ok() { eprintln!("CALL {}", structure_syntax::writer::expr_text(&call)); }
         let v = self.expr(&call, expected);
         match result_pin.and_then(|k| output_net.get(&(idx, k)).map(|ni| (k, *ni))) {
             Some((k, ni)) => {
@@ -735,6 +845,12 @@ impl<'c, 's> Lowerer<'c, 's> {
                 self.drive(out, ni, v, vals, u, span);
             }
         }
+        // in-out variables of the function
+        for (k, pin) in outputs.iter().enumerate() {
+            let Some(name) = &pin.name else { continue };
+            let (Some(actual), Some(&ni)) = (in_out_actual.get(&name.key()).cloned(), output_net.get(&(idx, k))) else { continue };
+            self.in_out_output(out, u, ni, actual, vals, pin.span);
+        }
         // named outputs share the validity of ENO
         if let Some(l) = &eno_loc {
             for (k, pin) in outputs.iter().enumerate() {
@@ -745,6 +861,24 @@ impl<'c, 's> Lowerer<'c, 's> {
                 }
             }
         }
+    }
+
+    /// The right-hand connection of an in-out variable carries the variable
+    /// connected to its left (figure 12); it may only lead to one variable or
+    /// in-out input (2.5.1.1, annex E: ambiguous value).
+    fn in_out_output(&mut self, out: &mut Vec<St>, u: &Unit, ni: usize, actual: Expr, vals: &mut [NetVal], span: Span) {
+        let sinks = &u.nets[ni].sinks;
+        if sinks.len() > 1 {
+            self.cx.annex_e("2.5.1.1", "ambiguous value: the output connection of an in-out variable shall lead to a single variable or in-out variable", span);
+        }
+        if sinks.iter().any(|s| !matches!(u.nodes[s.node].kind, NodeKind::Sink(_) | NodeKind::Block { .. })) {
+            self.cx.annex_e("2.5.1.1", "the output connection of an in-out variable can only lead to a variable or to an in-out variable", span);
+        }
+        let v = self.expr(&actual, None);
+        if self.cx.types.instance_pou(v.ty).is_none() {
+            self.drive(out, ni, v, vals, u, span);
+        }
+        vals[ni].reference = Some(actual);
     }
 
     fn negate_pin(&mut self, v: V, pin: &BlockPin) -> V {
@@ -758,5 +892,14 @@ impl<'c, 's> Lowerer<'c, 's> {
         }
         let ex = self.coerce(v, b, pin.span);
         V::val(Ex::not(ex), b)
+    }
+}
+
+/// A literal, possibly signed.
+fn is_literal(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Literal(_) => true,
+        ExprKind::Unary { op: ast::UnaryOp::Neg, operand } => matches!(operand.kind, ExprKind::Literal(_)),
+        _ => false,
     }
 }
