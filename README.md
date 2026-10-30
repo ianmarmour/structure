@@ -17,8 +17,14 @@ images (`%I`, `%Q`, `%M`), retentive variables and access paths.
 ```
 cargo build --release
 target/release/structure run examples/blink.st --program BLINK --for T#2s \
-    --every T#250ms --watch MAIN.BLINK_INSTANCE.LAMP
+    --every T#250ms --watch LAMP
 ```
+
+With `--program`, a default configuration runs the program in a cyclic task
+(`--interval`, 10 ms by default) as the instance `MAIN.<PROGRAM>_INSTANCE`;
+`--watch` and `--set` accept the program's variable names directly. Without
+it, the configurations of the source files are used and variables are named
+by their full path (`RESOURCE.INSTANCE.VARIABLE`, or an access path).
 
 | Command | Purpose |
 |---|---|

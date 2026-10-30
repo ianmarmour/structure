@@ -197,6 +197,9 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         }
         Command::Run { target, diag, duration, realtime, ns_per_instruction, non_preemptive, on_error, sets, watches, every, retain, trace } => {
             let image = build_image(&target, &diag)?;
+            // with the default configuration, variables of the program can be
+            // named without the path of its instance
+            let prefix = target.program.as_ref().map(|p| format!("MAIN.{}_INSTANCE.", p.to_uppercase()));
             let options = Options {
                 preemptive: !non_preemptive,
                 clock: if realtime { ClockMode::RealTime } else { ClockMode::Virtual },
@@ -219,9 +222,10 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             start.map_err(|e| e.to_string())?;
             for s in &sets {
                 let (path, value) = s.split_once('=').ok_or_else(|| format!("--set expects PATH=VALUE, got '{}'", s))?;
-                let (_, ty) = rt.resolve(path)?;
-                let v = parse_value(&ty, value)?;
-                rt.write(path, &v)?;
+                let path = full_path(&rt, prefix.as_deref(), path.trim());
+                let (_, ty) = rt.resolve(&path)?;
+                let v = parse_value(&ty, value.trim())?;
+                rt.write(&path, &v)?;
             }
             let total = parse_time(&duration)?;
             let step = match &every {
@@ -236,7 +240,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
                 rt.run_for(d);
                 elapsed += d;
                 if every.is_some() {
-                    print_watches(&rt, &watches, true);
+                    print_watches(&rt, prefix.as_deref(), &watches, true);
                 }
                 for e in &rt.errors[printed_errors..] {
                     eprintln!("{}", e);
@@ -244,7 +248,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
                 printed_errors = rt.errors.len();
             }
             if every.is_none() {
-                print_watches(&rt, &watches, false);
+                print_watches(&rt, prefix.as_deref(), &watches, false);
             }
             if let Some(events) = &rt.trace {
                 for e in events {
@@ -300,10 +304,20 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
     }
 }
 
-fn print_watches(rt: &Runtime, watches: &[String], with_time: bool) {
+/// The path of a variable, completed with the path of the program instance
+/// of the default configuration when it does not name a variable as given.
+fn full_path(rt: &Runtime, prefix: Option<&str>, path: &str) -> String {
+    match prefix {
+        Some(p) if rt.resolve(path).is_err() && rt.read_access(path).is_err() && rt.resolve(&format!("{}{}", p, path)).is_ok() => format!("{}{}", p, path),
+        _ => path.to_string(),
+    }
+}
+
+fn print_watches(rt: &Runtime, prefix: Option<&str>, watches: &[String], with_time: bool) {
     let mut line = Vec::new();
     for w in watches {
-        let v = rt.read(w).or_else(|_| rt.read_access(w));
+        let path = full_path(rt, prefix, w);
+        let v = rt.read(&path).or_else(|_| rt.read_access(&path));
         let s = match v {
             Ok(v) => format!("{} = {}", w, v),
             Err(e) => format!("{} = <{}>", w, e),
