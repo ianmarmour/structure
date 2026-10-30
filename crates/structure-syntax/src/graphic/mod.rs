@@ -4,6 +4,55 @@
 //! A network is represented as a set of nodes (contacts, coils, blocks,
 //! variables, connectors, jumps, ...) whose pins are joined by nets. A net
 //! with several drivers is a "wired OR" (LD only).
+//!
+//! # Drawing conventions
+//!
+//! * Lines: `-` horizontal, `|` vertical, `+` junction or corner (table 57).
+//!   A vertical line crossing a horizontal one does not connect, whether
+//!   the crossing cell is drawn `|` (features 7, 9) or `-`; a `+` at a
+//!   crossing connects. A `-` line ending against a `|` line (or a `|` line
+//!   ending against a `-` line) connects to it.
+//! * Blocks are rectangles with `+` corners. The function, function block or
+//!   operator name (`ADD`, `&`, `>=1`, `=2k+1`, `:=`, `T---0`, ...) is the text
+//!   in the middle of the first row that has some; a name ending with `_`
+//!   continues on the next row (`BCD_` / `TO_INT`). The instance name is
+//!   written above the block. A pin is a row where a line touches a side,
+//!   or where a formal name is written against a side; `NAME---NAME` across
+//!   the block is an in-out parameter (an input and an output with the same
+//!   name). `O` just outside a side negates the pin (table 19), `>`/`<` in
+//!   place of the left side marks a rising/falling edge input.
+//! * A variable or literal at the free left end of a line is a `Source`, at
+//!   the free right end a `Sink`; written between two lines (`--PTR--`) it
+//!   is a `Sink` whose output pin 0 carries the value just assigned. One
+//!   blank between the text and the line is tolerated (`0 ---|`).
+//! * LD: power rails are vertical lines with links attached on one side
+//!   only; contacts `| |`, `|/|`, `|P|`, `|N|` (also `!`, and `||`), coils
+//!   `( )`, `(/)`, `(S)`, `(R)`, `(P)`, `(N)` (also `()`), each with its
+//!   variable written on the row above (matched in left-to-right order when
+//!   the counts agree, nearest otherwise).
+//! * Jumps `--->>LABEL`, returns `---<RETURN>`, connectors `--->NAME>` and
+//!   continuations `>NAME>---`. Networks joined by a connector pair form a
+//!   single network. A line `NAME:` alone labels the next network.
+//! * Action blocks are boxes divided into fields by `+`/`|` dividers:
+//!   qualifier (with an optional duration after it or on the next row),
+//!   action name, indicators (table 44).
+//! * SFC (2.6): steps are boxes with directed links attached to their top
+//!   or bottom borders, initial steps have double borders (`+===+`, `||`).
+//!   A transition is a `+` on a vertical link followed by its condition
+//!   (ST expression, or a transition name, see [`resolve_transition_names`])
+//!   or with a line on its left coming from an LD/FBD network. Selection
+//!   divergences and convergences use single lines (`*` marks the entry of
+//!   a prioritised divergence, numbers right of the branch links give user
+//!   priorities), simultaneous ones double lines (`==+==`). Links may go
+//!   up and around (loops), with optional `->-` / `-<-` arrows. Action
+//!   blocks are attached to the right of a step; blocks stacked below it
+//!   are concatenated, and a box sharing the bottom border of an action
+//!   block is its "d" field (the action body, in any language).
+//!
+//! A transition condition drawn as a network is returned as
+//! `TransitionCondition::Graphic` whose network ends in a `Sink` named
+//! [`TRANSITION_MARKER`] (a keyword, so it cannot clash with a variable):
+//! the value reaching that sink is the transition condition.
 
 use crate::ast::{Body, Edge, Expr, ExprKind, GraphicBody, GraphicLanguage, Qualifier, Sfc, TransitionCondition};
 use crate::token::{Token, TokenKind};
@@ -119,6 +168,8 @@ mod ladder;
 mod net;
 mod scan;
 mod sfc;
+
+pub use sfc::TRANSITION_MARKER;
 
 
 /// Parses a semigraphic body. `origin` is the byte offset in `file` of the

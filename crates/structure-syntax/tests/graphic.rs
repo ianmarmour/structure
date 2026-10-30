@@ -2377,3 +2377,57 @@ VAR_OUTPUT FWD_ALRM : BOOL; END_VAR VAR FWD_MON : CMD_MONITOR; END_VAR",
     assert_eq!(i.len(), 7);
     assert_eq!(o.iter().map(|x| x.0.clone().unwrap()).collect::<Vec<_>>(), ["CMD", "ALRM"]);
 }
+
+#[test]
+fn sfc_single_field_action_blocks_table_44() {
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        "VAR a, b, X : BOOL; END_VAR",
+        r#"
+  +==+===+   +------+
+  || S1 ||---| ACT1 |
+  +==+===+   +------+
+     |       | ACT2 |
+     + a     +------+
+     |
+  +--+--+   +-----------+
+  | S2  |---|   ACT3    |
+  +--+--+   +-----------+
+     |      | X := NOT X; |
+     + b    +-------------+
+     |
+  +--+--+
+  | S3  |
+  +-----+
+"#,
+    ));
+    // the "d" field must be as wide as its action block
+    assert!(!p.errors.is_empty());
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        "VAR a, b, X : BOOL; END_VAR",
+        r#"
+  +==+===+   +------+
+  || S1 ||---| ACT1 |
+  +==+===+   +------+
+     |       | ACT2 |
+     + a     +------+
+     |
+  +--+--+   +-------------+
+  | S2  |---|    ACT3     |
+  +--+--+   +-------------+
+     |      | X := NOT X; |
+     + b    +-------------+
+     |
+  +--+--+
+  | S3  |
+  +-----+
+"#,
+    ))
+    .ok();
+    assert_eq!(steps(&p), ["*S1 ACT1(-) ACT2(-)", "S2 ACT3(-)", "S3"]);
+    let s = sfc_of(&p);
+    assert_eq!(s.actions.len(), 1);
+    assert_eq!(s.actions[0].name.text, "ACT3");
+    assert!(matches!(&s.actions[0].body, Body::St(v) if v.len() == 1));
+}

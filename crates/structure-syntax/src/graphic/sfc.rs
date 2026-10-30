@@ -87,24 +87,41 @@ struct StepDraft {
 pub fn parse_sfc(file: &SourceFile, grid: &Grid, diags: &mut Vec<Diagnostic>) -> (Sfc, Vec<Network>) {
     let mut cx = NetCtx::new(file, grid);
     let nboxes = cx.s.boxes.len();
-    let mut is_step = vec![false; nboxes];
+    let mut is_step: Vec<bool> = (0..nboxes).map(|i| step_like(&cx.s, i)).collect();
+    // action blocks: boxes with field dividers, or a single field (table 44
+    // fields "a" and "c" omitted) joined by a straight line to a step
+    let mut is_action: Vec<bool> = (0..nboxes).map(|i| !cx.s.boxes[i].dividers.is_empty() || (!is_step[i] && joined_to_step(&cx.s, &is_step, i))).collect();
+    // boxes stacked below an action block: concatenated action blocks, or
+    // the "d" field holding the action body
     let mut dfield_of: HashMap<usize, usize> = HashMap::new();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for i in 0..nboxes {
+            if is_action[i] || dfield_of.values().any(|&d| d == i) {
+                continue;
+            }
+            let b = cx.s.boxes[i].clone();
+            let Some(a) = (0..nboxes).find(|&a| is_action[a] && cx.s.boxes[a].r1 == b.r0 && cx.s.boxes[a].c0 == b.c0) else { continue };
+            is_step[i] = false;
+            let (x, z) = b.inner_cols();
+            let words: Vec<_> = (b.r0 + 1..b.r1).flat_map(|r| BoxRect::words(cx.g, r, x, z)).collect();
+            let single = b.r1 == b.r0 + 2 && words.len() == 1 && words[0].2.chars().next().is_some_and(is_ident_start) && words[0].2.chars().all(is_ident_char);
+            if single {
+                is_action[i] = true;
+            } else {
+                dfield_of.insert(a, i);
+            }
+            changed = true;
+        }
+    }
     let mut blocks = Vec::new();
     let mut action_boxes = Vec::new();
-    for (i, step) in is_step.iter_mut().enumerate() {
-        let b = cx.s.boxes[i].clone();
-        if !b.dividers.is_empty() {
+    for i in 0..nboxes {
+        if is_action[i] {
             action_boxes.push(i);
             cx.scan_sides(i);
-            continue;
-        }
-        if let Some(a) = (0..nboxes).find(|&a| !cx.s.boxes[a].dividers.is_empty() && cx.s.boxes[a].r1 == b.r0 && cx.s.boxes[a].c0 == b.c0) {
-            dfield_of.insert(a, i);
-            continue;
-        }
-        if step_like(&cx.s, i) {
-            *step = true;
-        } else {
+        } else if !is_step[i] && !dfield_of.values().any(|&d| d == i) {
             blocks.push(i);
             cx.scan_sides(i);
         }
@@ -541,6 +558,30 @@ pub fn parse_sfc(file: &SourceFile, grid: &Grid, diags: &mut Vec<Diagnostic>) ->
         });
     }
     (sfc, rest)
+}
+
+/// A box whose left side is joined by a straight horizontal line to the
+/// right side of a step.
+fn joined_to_step(s: &Scene, is_step: &[bool], i: usize) -> bool {
+    let b = &s.boxes[i];
+    for r in b.r0 + 1..b.r1 {
+        let mut c = b.c0;
+        let mut dashes = 0;
+        while c > 0 && s.chu(r, c - 1) == '-' && s.is_free(r, c - 1) {
+            c -= 1;
+            dashes += 1;
+        }
+        if dashes == 0 || c == 0 {
+            continue;
+        }
+        if let Some(j) = s.box_at(r, c - 1) {
+            let st = &s.boxes[j];
+            if is_step[j] && st.c1 == c - 1 && r > st.r0 && r < st.r1 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Connects the step pin `pin` to what is drawn at (r, c) next to its top
