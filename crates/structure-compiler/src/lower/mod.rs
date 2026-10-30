@@ -83,6 +83,12 @@ pub struct Lowerer<'c, 's> {
     pub language: Lang,
     /// Type to give to operations whose operands are all untyped literals.
     pub lit_hint: Option<TypeId>,
+    /// Compiler-generated variables (names starting with `$`), used by the
+    /// IL and graphical lowering to refer to temporaries from syntax trees.
+    pub synth: std::collections::HashMap<String, (Loc, TypeId)>,
+    pub synth_count: u32,
+    /// IL: type expected by the instruction consuming the current result.
+    pub il_hint: Option<TypeId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,7 +102,7 @@ impl<'c, 's> Lowerer<'c, 's> {
     pub fn new(cx: &'c mut Ctx<'s>, pou: usize) -> Self {
         let kind = cx.pous[pou].kind;
         let frame_top = cx.pous[pou].frame_base;
-        Lowerer { cx, pou, kind, frame_top, next_label: 1, loops: Vec::new(), return_label: 0, for_vars: Vec::new(), region: Region::Body, language: Lang::St, lit_hint: None }
+        Lowerer { cx, pou, kind, frame_top, next_label: 1, loops: Vec::new(), return_label: 0, for_vars: Vec::new(), region: Region::Body, language: Lang::St, lit_hint: None, synth: Default::default(), synth_count: 0, il_hint: None }
     }
 
     pub fn label(&mut self) -> u32 {
@@ -139,6 +145,22 @@ impl<'c, 's> Lowerer<'c, 's> {
     pub fn err(&mut self, msg: impl Into<String>, span: Span) -> V {
         self.cx.error(msg, span);
         V::err(&self.cx.types)
+    }
+
+    /// Registers a synthetic variable for a location; returns its name.
+    pub fn synth_var(&mut self, prefix: &str, loc: Loc, ty: TypeId) -> String {
+        self.synth_count += 1;
+        let name = format!("${}{}", prefix, self.synth_count);
+        self.synth.insert(name.clone(), (loc, ty));
+        name
+    }
+
+    /// A syntax-tree reference to a synthetic variable.
+    pub fn synth_expr(name: &str, span: Span) -> structure_syntax::ast::Expr {
+        structure_syntax::ast::Expr {
+            kind: structure_syntax::ast::ExprKind::Name(structure_syntax::Ident::new(name, span)),
+            span,
+        }
     }
 
     /// Initialises a temporary string so that natives know its capacity.

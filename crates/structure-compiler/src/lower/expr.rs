@@ -296,6 +296,9 @@ impl<'c, 's> Lowerer<'c, 's> {
 
     fn is_variable_name(&self, id: &Ident) -> bool {
         let key = id.key();
+        if self.synth.contains_key(&key) {
+            return true;
+        }
         let p = &self.cx.pous[self.pou];
         p.var_map.contains_key(&key) || p.sfc.as_ref().map(|s| s.steps.iter().any(|x| x.name == key) || s.actions.iter().any(|a| a.name == key)).unwrap_or(false)
     }
@@ -462,6 +465,9 @@ impl<'c, 's> Lowerer<'c, 's> {
 
     fn name_place(&mut self, id: &Ident, write: bool) -> Option<Place> {
         let key = id.key();
+        if let Some((loc, ty)) = self.synth.get(&key) {
+            return Some(Place { loc: loc.clone(), ty: *ty, read_only: None, var: None, is_result: false, fb_output: false });
+        }
         let p = &self.cx.pous[self.pou];
         if let Some(&vi) = p.var_map.get(&key) {
             let v = p.vars[vi].clone();
