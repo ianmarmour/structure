@@ -257,20 +257,40 @@ language features:
 | 39 | 22b | VAR_EXTERNAL CONSTANT declarations within PROGRAM type declarations |
 | 39 | 23 | VAR_GLOBAL CONSTANT declarations within PROGRAM type declarations |
 | 39 | 24 | VAR_TEMP declarations within PROGRAM type declarations |
+| 40 | 1 | Step and initial step - graphical form |
 | 40 | 2 | Step and initial step - textual form |
 | 40 | 3a | Step flag - general form |
 | 40 | 4 | Step elapsed time - general form |
+| 41 | 1 | Transition condition adjacent to the transition using ST language |
+| 41 | 2 | Transition condition adjacent to the transition using LD language |
+| 41 | 3 | Transition condition adjacent to the transition using FBD language |
+| 41 | 4 | Use of a transition connector |
+| 41 | 4a | Transition connector condition using LD language |
+| 41 | 4b | Transition connector condition using FBD language |
 | 41 | 5 | Textual transition using ST language |
 | 41 | 6 | Textual transition using IL language |
+| 41 | 7 | Use of a transition name |
+| 41 | 7a | Transition name, condition using LD language |
+| 41 | 7b | Transition name, condition using FBD language |
 | 41 | 7c | Transition name, condition using IL language |
 | 41 | 7d | Transition name, condition using ST language |
 | 42 | 1 | Boolean variable as action |
+| 42 | 2l | Graphical declaration of actions in LD language |
+| 42 | 2f | Graphical declaration of actions in FBD language |
+| 42 | 2s | Inclusion of SFC elements in actions |
 | 42 | 3s | Textual declaration of actions in ST language |
 | 42 | 3i | Textual declaration of actions in IL language |
+| 43 | 1 | Action block physically or logically adjacent to the step |
+| 43 | 2 | Concatenated action blocks |
 | 43 | 3 | Textual step body |
+| 43 | 4 | Action block "d" field |
 | 44 | 1 | "a": Qualifier |
 | 44 | 2 | "b": Action name |
 | 44 | 3 | "c": Boolean "indicator" variables |
+| 44 | 4 | "d": Action using IL language |
+| 44 | 5 | "d": Action using ST language |
+| 44 | 6 | "d": Action using LD language |
+| 44 | 7 | "d": Action using FBD language |
 | 44 | 8 | Use of action blocks in ladder diagrams |
 | 44 | 9 | Use of action blocks in function block diagrams |
 | 45 | 1 | None (non-stored) |
@@ -286,12 +306,15 @@ language features:
 | 45 | 11 | P1: Pulse (rising edge) |
 | 45 | 12 | P0: Pulse (falling edge) |
 | 45a | 1 | Action control per figures 14 a) and 15 a) (with "final scan") |
-| 46 | 1 | Single sequence (textual equivalent) |
-| 46 | 2a, 2b | Divergence of sequence selection with priority (textual equivalent: declaration order, PRIORITY) |
-| 46 | 3 | Convergence of sequence selection (textual equivalent) |
-| 46 | 4 | Simultaneous sequences - divergence and convergence (textual equivalent) |
-| 46 | 5a, 5b | Sequence skip (textual equivalent) |
-| 46 | 6a, 6b | Sequence loop (textual equivalent) |
+| 46 | 1 | Single sequence |
+| 46 | 2a | Divergence of sequence selection, left-to-right priority (textually: declaration order) |
+| 46 | 2b | Divergence of sequence selection, numbered branches (textually: PRIORITY) |
+| 46 | 2c | Divergence of sequence selection without priority (graphical) |
+| 46 | 3 | Convergence of sequence selection |
+| 46 | 4 | Simultaneous sequences - divergence and convergence |
+| 46 | 5a, 5b, 5c | Sequence skip |
+| 46 | 6a, 6b, 6c | Sequence loop |
+| 46 | 7 | Directional arrows |
 | 49 | 1 | CONFIGURATION...END_CONFIGURATION construction |
 | 49 | 2 | VAR_GLOBAL...END_VAR construction within CONFIGURATION |
 | 49 | 3 | RESOURCE...ON...END_RESOURCE construction |

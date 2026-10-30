@@ -608,3 +608,59 @@ fn sequence_skip_and_loop_table_46() {
     assert!(x(&rt, "S35"));
     assert!(rt.errors.is_empty(), "{:?}", rt.errors);
 }
+
+#[test]
+fn graphical_and_textual_action_and_transition_bodies() {
+    // 41 7b: transition name with an FBD definition; 42 2l: action declared
+    // in LD; 44 4: "d" field in IL
+    let src = format!(
+        r#"
+PROGRAM P
+VAR A, B, OUT1, OUT2 : BOOL; END_VAR
+  +==+===+
+  || S1 ||
+  +==+===+
+     |
+     + T12
+     |
+  +--+--+   +---+-------+
+  | S2  |---| N | LD_ACT|
+  +--+--+   +---+-------+
+     |
+     + NOT A
+     |
+  +--+--+   +---+----------------+
+  | S3  |---| N |     IL_ACT     |
+  +-----+   +---+----------------+
+            |   LD    B          |
+            |   ST    OUT2       |
+            +--------------------+
+TRANSITION T12 FROM S1 TO S2 :
+         +---+
+A--------| & |---T12
+B--------|   |
+         +---+
+END_TRANSITION
+ACTION LD_ACT:
+|   A        OUT1   |
++---| |------( )----+
+|                   |
+END_ACTION
+END_PROGRAM
+{CFG}
+"#
+    );
+    let mut rt = build(&src);
+    let x = |rt: &structure_runtime::Runtime, s: &str| boolean(rt, &format!("R.P1.{}", s));
+    set(&mut rt, "A", true);
+    rt.run_for(10_000);
+    assert!(x(&rt, "S1.X"), "T12 needs A and B");
+    set(&mut rt, "B", true);
+    rt.run_for(20_000);
+    assert!(x(&rt, "S2.X") && x(&rt, "OUT1"));
+    set(&mut rt, "A", false);
+    rt.run_for(20_000);
+    assert!(x(&rt, "S3.X") && x(&rt, "OUT2"));
+    assert!(!x(&rt, "OUT1"), "final scan of LD_ACT with A = FALSE");
+    assert!(rt.errors.is_empty(), "{:?}", rt.errors);
+}
