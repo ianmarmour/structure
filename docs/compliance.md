@@ -109,9 +109,17 @@ language features:
 | 18 | 8 | Initialization of structured variables |
 | 18 | 9 | Initialization of constants |
 | 18 | 10 | Initialization of function block instances |
+| 19 | 1 | Negated input |
+| 19 | 2 | Negated output |
 | 19a | 1 | Formal invocation of functions |
 | 19a | 2 | Non-formal invocation of functions |
+| 20 | 1 | Use of EN and ENO shown in LD |
+| 20 | 2 | Usage without EN and ENO (FBD) |
+| 20 | 3 | Usage with EN and without ENO (FBD) |
+| 20 | 4 | Usage without EN and with ENO (FBD) |
 | 20a | 1 | In-out variable declaration (textual) |
+| 20a | 2 | In-out variable declaration (graphical) |
+| 20a | 3 | Graphical connection of in-out variable to different variables |
 | 21 | 1 | Overloaded functions |
 | 21 | 2 | Typed functions |
 | 22 | 1 | Type conversion functions `*_TO_**` |
@@ -202,11 +210,18 @@ language features:
 | 33 | 3a | RETAIN qualifier on internal function blocks |
 | 33 | 3b | NON_RETAIN qualifier on internal function blocks |
 | 33 | 4a | VAR_IN_OUT declaration (textual) |
+| 33 | 4b | VAR_IN_OUT declaration and usage (graphical) |
+| 33 | 4c | VAR_IN_OUT declaration with assignment to different variables (graphical) |
 | 33 | 5a | Function block instance name as input (textual) |
+| 33 | 5b | Function block instance name as input (graphical) |
 | 33 | 6a | Function block instance name as VAR_IN_OUT (textual) |
+| 33 | 6b | Function block instance name as VAR_IN_OUT (graphical) |
 | 33 | 7a | Function block instance name as external variable (textual) |
+| 33 | 7b | Function block instance name as external variable (graphical) |
 | 33 | 8a | Textual declaration of rising edge inputs |
 | 33 | 8b | Textual declaration of falling edge inputs |
+| 33 | 9a | Graphical declaration of rising edge inputs |
+| 33 | 9b | Graphical declaration of falling edge inputs |
 | 33 | 10a | VAR_EXTERNAL declarations within function block type declarations |
 | 33 | 10b | VAR_EXTERNAL CONSTANT declarations within function block type declarations |
 | 33 | 11 | VAR_TEMP declarations within function block type declarations |
@@ -253,6 +268,11 @@ language features:
 | 42 | 3s | Textual declaration of actions in ST language |
 | 42 | 3i | Textual declaration of actions in IL language |
 | 43 | 3 | Textual step body |
+| 44 | 1 | "a": Qualifier |
+| 44 | 2 | "b": Action name |
+| 44 | 3 | "c": Boolean "indicator" variables |
+| 44 | 8 | Use of action blocks in ladder diagrams |
+| 44 | 9 | Use of action blocks in function block diagrams |
 | 45 | 1 | None (non-stored) |
 | 45 | 2 | N: Non-stored |
 | 45 | 3 | R: overriding Reset |
@@ -402,6 +422,56 @@ types. The effects are specified in `implementation-parameters.md`
 | 56 | 9 | EXIT |
 | 56 | 10 | Empty statement |
 
+## Graphical languages
+
+Graphical elements are written in the semigraphic form with the
+characters of ISO/IEC 10646-1 (the odd-numbered features of table 57). They
+can be used for the bodies of program organization units, actions and
+transitions, and for the graphical declaration of the external interface of
+program organization units (figures 6 b, 11, 12 a).
+
+| Table No. | Feature No. | Features description |
+|---|---|---|
+| 57 | 1 | Horizontal lines: ISO/IEC 10646-1 "minus" character |
+| 57 | 3 | Vertical lines: ISO/IEC 10646-1 "vertical line" character |
+| 57 | 5 | Horizontal/vertical connection: ISO/IEC 10646-1 "plus" character |
+| 57 | 7 | Line crossings without connection: ISO/IEC 10646-1 characters |
+| 57 | 9 | Connected and non-connected corners: ISO/IEC 10646-1 characters |
+| 57 | 11 | Blocks with connecting lines: ISO/IEC 10646-1 characters |
+| 57 | 13 | Connectors using ISO/IEC 10646-1 characters |
+| 58 | 1 | Unconditional jump (FBD) |
+| 58 | 2 | Unconditional jump (LD) |
+| 58 | 3 | Conditional jump (FBD) |
+| 58 | 4 | Conditional jump (LD) |
+| 58 | 5 | Conditional return (LD) |
+| 58 | 6 | Conditional return (FBD) |
+| 58 | 7 | Unconditional return from FUNCTION or FUNCTION_BLOCK |
+| 58 | 8 | Unconditional return: alternative representation in LD |
+| 59 | 1 | Left power rail |
+| 59 | 2 | Right power rail |
+| 60 | 1 | Horizontal link |
+| 60 | 2 | Vertical link |
+| 61 | 1 | Normally open contact `--\| \|--` |
+| 61 | 2 | Normally open contact `--! !--` |
+| 61 | 3 | Normally closed contact `--\|/\|--` |
+| 61 | 4 | Normally closed contact `--!/!--` |
+| 61 | 5 | Positive transition-sensing contact `--\|P\|--` |
+| 61 | 6 | Positive transition-sensing contact `--!P!--` |
+| 61 | 7 | Negative transition-sensing contact `--\|N\|--` |
+| 61 | 8 | Negative transition-sensing contact `--!N!--` |
+| 62 | 1 | Coil |
+| 62 | 2 | Negated coil |
+| 62 | 3 | SET (latch) coil |
+| 62 | 4 | RESET (unlatch) coil |
+| 62 | 8 | Positive transition-sensing coil |
+| 62 | 9 | Negative transition-sensing coil |
+
+Networks are evaluated in the order of 4.1.3, 4.2.6 and 4.3.3: top to
+bottom, each element once all its inputs are known; in feedback paths the
+value of the feedback variable from the previous evaluation is used
+(figure 23). In LD, several links connected to one vertical link form a
+wired OR; in FBD, outputs connected together are an error (4.3.2).
+
 ## Accompanying documents
 
 * Implementation-dependent parameters (1.5.1 b): `implementation-parameters.md`
@@ -410,5 +480,7 @@ types. The effects are specified in `implementation-parameters.md`
 * Extensions (1.5.1 e, f): `extensions.md` (`structure extensions`); their use
   is reported, as errors with `--strict`.
 * Formal syntax (1.5.1 i): `formal-syntax.md` (`structure syntax`).
-* Reading and writing of library elements (1.5.1 j): all textual elements
-  are read by every command and written by `structure fmt`.
+* Reading and writing of library elements (1.5.1 j): all elements are read
+  by every command and written by `structure fmt`; graphical bodies are
+  written in their semigraphic form, graphical interface declarations in
+  their textual form.
