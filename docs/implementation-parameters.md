@@ -58,7 +58,7 @@ implementation-dependent features reported (1.5.1 g).
 | 3.3.2.3 | Maximum number of CASE selections | Unlimited. |
 | 3.3.2.4 | Value of control variable upon termination of FOR loop | The last value for which the statements were executed (or the initial value if they were never executed); the control variable is not incremented past the final value. |
 | 4.1.1 | Restrictions on network topology | None. Networks are delimited by connectivity; connectors join networks. |
-| 4.1.3 | Evaluation order of feedback loops | Elements are evaluated as soon as all their inputs are known, top to bottom then left to right among elements that are ready. An explicit loop is broken at a net connected to a variable (the feedback variable): its value before the evaluation of the network is used. A loop without such a variable is an error. |
+| 4.1.3 | Evaluation order of feedback loops | Elements are evaluated as soon as all their inputs are known, top to bottom then left to right among elements that are ready. An explicit loop is broken at a variable connected to it (the feedback variable, figure 23) or, failing that, at an output of a function block instance: the value of the variable or output from the previous evaluation is used by the elements of the loop, and the variable is assigned when the loop has been evaluated. A loop without a variable or function block is an error (annex E). |
 | 4.3.3 | Order of evaluation of FBD networks (means for the user to determine it) | Networks are evaluated top to bottom in the order in which they are drawn, except as modified by jumps and returns. |
 
 ## Additional parameters

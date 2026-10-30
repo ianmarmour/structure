@@ -59,7 +59,7 @@ routine and the source location (file, line, column).
 | 3.3.2.1 | Return from function without value assigned | (4) (a check is compiled into every function whose body does not assign the result before any RETURN) |
 | 3.3.2.4 | Iteration fails to terminate | (4): an execution of a POU exceeding the watchdog limit (50 000 000 instructions by default) is stopped |
 | 4.1.1 | Same identifier used as connector label and element name | (3) |
-| 4.1.3 | Uninitialized feedback variable | (3): an explicit feedback loop must be connected to a variable (whose initial value is then used) |
+| 4.1.3 | Uninitialized feedback variable | (3): an explicit feedback loop must be connected to a variable or pass through an output of a function block instance (whose initial value is then used) |
 
 ## Other violations (1.5.1 c)
 
