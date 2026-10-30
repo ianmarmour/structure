@@ -13,4 +13,6 @@ path = "src/main.rs"
 structure-syntax = { path = "../structure-syntax" }
 structure-compiler = { path = "../structure-compiler" }
 structure-runtime = { path = "../structure-runtime" }
+structure-drivers = { path = "../structure-drivers" }
+ctrlc = "3"
 clap = { version = "4", features = ["derive"] }

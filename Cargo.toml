@@ -5,6 +5,8 @@ members = [
     "crates/structure-runtime",
     "crates/structure-compiler",
     "crates/structure-cli",
+    "crates/structure-drivers",
+    "examples/drivers/rust",
 ]
 
 [workspace.package]

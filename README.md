@@ -47,6 +47,27 @@ target/release/structure run examples/agv.st --for T#200ms --set %IX3=TRUE \
 | `structure errors` | Treatment of the error conditions of annex E |
 | `structure extensions` | Extensions to the standard (1.5.1 e) |
 | `structure syntax` | Formal syntax of the textual elements (1.5.1 i) |
+| `structure drivers` | I/O drivers: configuration, built-in drivers, writing drivers |
+
+## I/O drivers
+
+Drivers exchange the process images (`%I`, `%Q`) with devices and networks
+at task boundaries: inputs before a task executes, outputs after it. Modbus
+TCP (client) and a loopback driver are built in; any other driver
+(EtherCAT, PROFINET, proprietary fieldbuses) is a shared library
+implementing the C interface of
+`crates/structure-runtime/include/structure_driver.h`, written in C, C++,
+Rust (`export_driver!`) or any language that can export C functions.
+
+```
+target/release/structure run plant.st --realtime --drivers drivers.json
+```
+
+With `--realtime` and no `--for`, the runtime runs until interrupted
+(Ctrl-C), then stops the resources so that drivers put their outputs into a
+safe state. See `docs/drivers.md` and the examples in `examples/drivers/`.
+
+## Options
 
 Use `--strict` to report extensions as errors and
 `--report-implementation-dependent` to report uses of implementation-dependent
@@ -60,6 +81,7 @@ creates one with a single cyclic task.
 | `crates/structure-syntax` | Lexer, parser and syntax tree for all languages, semigraphic parser, source writer |
 | `crates/structure-compiler` | Type system, semantic checks, lowering of every language to a typed IR, code generation, standard library, linker |
 | `crates/structure-runtime` | Bytecode VM, native functions, scheduler, I/O, retentive data, variable access |
+| `crates/structure-drivers` | Built-in I/O drivers (Modbus TCP, loopback) |
 | `crates/structure-cli` | The `structure` command |
 
 Documentation required by subclause 1.5.1 is in `docs/`.

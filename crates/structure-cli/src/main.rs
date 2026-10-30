@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use structure_compiler::{compile, default_configuration, CompileOptions, Mode};
 use structure_runtime::value::parse_value;
-use structure_runtime::{ClockMode, ErrorPolicy, Image, Options, Runtime};
+use structure_runtime::{ClockMode, DriverConfig, ErrorPolicy, Image, Options, Runtime};
 use structure_syntax::diag::Policy;
 use structure_syntax::{FileId, SourceMap};
 
@@ -14,6 +14,7 @@ const PARAMETERS: &str = include_str!("../../../docs/implementation-parameters.m
 const SYNTAX: &str = include_str!("../../../docs/formal-syntax.md");
 const ERRORS: &str = include_str!("../../../docs/error-handling.md");
 const EXTENSIONS: &str = include_str!("../../../docs/extensions.md");
+const DRIVERS: &str = include_str!("../../../docs/drivers.md");
 
 #[derive(Parser)]
 #[command(name = "structure", version, about = "Compiler and runtime for IEC 61131-3 (2003) programmable controller languages")]
@@ -81,9 +82,10 @@ enum Command {
         target: Target,
         #[command(flatten)]
         diag: Diag,
-        /// Duration to run (a TIME literal); runs forever if omitted with --realtime.
-        #[arg(long = "for", default_value = "T#1s")]
-        duration: String,
+        /// Duration to run (a TIME literal). Default: T#1s, or until
+        /// interrupted (Ctrl-C) with --realtime.
+        #[arg(long = "for")]
+        duration: Option<String>,
         /// Use the wall clock instead of simulated time.
         #[arg(long)]
         realtime: bool,
@@ -111,6 +113,10 @@ enum Command {
         /// Print task scheduling events.
         #[arg(long)]
         trace: bool,
+        /// I/O driver configuration (JSON) attaching drivers to the process
+        /// images of the resources (see `structure drivers`).
+        #[arg(long)]
+        drivers: Option<PathBuf>,
     },
     /// Write source files in canonical textual form.
     Fmt {
@@ -130,6 +136,8 @@ enum Command {
     Errors,
     /// Print the list of extensions (1.5.1 e).
     Extensions,
+    /// Print the documentation of I/O drivers and the built-in driver types.
+    Drivers,
 }
 
 fn policy(d: &Diag) -> Policy {
@@ -195,7 +203,7 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             eprintln!("wrote {}", output.display());
             Ok(ExitCode::SUCCESS)
         }
-        Command::Run { target, diag, duration, realtime, ns_per_instruction, non_preemptive, on_error, sets, watches, every, retain, trace } => {
+        Command::Run { target, diag, duration, realtime, ns_per_instruction, non_preemptive, on_error, sets, watches, every, retain, trace, drivers } => {
             let image = build_image(&target, &diag)?;
             // with the default configuration, variables of the program can be
             // named without the path of its instance
@@ -214,6 +222,14 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             if trace {
                 rt.trace = Some(Vec::new());
             }
+            if let Some(path) = &drivers {
+                let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path.display(), e))?;
+                let config = DriverConfig::from_json(&text).map_err(|e| format!("{}: {}", path.display(), e))?;
+                rt.load_drivers(&config, &structure_drivers::registry())?;
+                if !realtime && !config.drivers.is_empty() {
+                    eprintln!("note: drivers exchange data with devices in real time; use --realtime to run the tasks on the wall clock");
+                }
+            }
             let retained = retain.as_ref().and_then(|p| std::fs::read(p).ok());
             let start = match &retained {
                 Some(data) => rt.warm_start(data),
@@ -227,18 +243,33 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
                 let v = parse_value(&ty, value.trim())?;
                 rt.write(&path, &v)?;
             }
-            let total = parse_time(&duration)?;
+            // run for the given time, or until interrupted with --realtime
+            let total = match (&duration, realtime) {
+                (Some(d), _) => Some(parse_time(d)?),
+                (None, true) => None,
+                (None, false) => Some(1_000_000),
+            };
+            let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            if total.is_none() {
+                let flag = interrupted.clone();
+                ctrlc::set_handler(move || flag.store(true, std::sync::atomic::Ordering::SeqCst)).map_err(|e| e.to_string())?;
+            }
             let step = match &every {
                 Some(e) => parse_time(e)?,
-                None => total,
+                None => total.unwrap_or(100_000),
             }
             .max(1);
             let mut elapsed = 0;
             let mut printed_errors = 0;
-            while elapsed < total {
-                let d = step.min(total - elapsed);
+            let mut printed_events = 0;
+            while total.is_none_or(|t| elapsed < t) && !interrupted.load(std::sync::atomic::Ordering::SeqCst) {
+                let d = total.map_or(step, |t| step.min(t - elapsed));
                 rt.run_for(d);
                 elapsed += d;
+                for e in &rt.driver_events[printed_events..] {
+                    eprintln!("{} {}", structure_runtime::text::format_time(e.time), e);
+                }
+                printed_events = rt.driver_events.len();
                 if every.is_some() {
                     print_watches(&rt, prefix.as_deref(), &watches, true);
                 }
@@ -247,6 +278,9 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
                 }
                 printed_errors = rt.errors.len();
             }
+            // stopping the resources lets the drivers bring the outputs
+            // into a safe state
+            rt.stop();
             if every.is_none() {
                 print_watches(&rt, prefix.as_deref(), &watches, false);
             }
@@ -299,6 +333,11 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
         }
         Command::Extensions => {
             print!("{}", EXTENSIONS);
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Drivers => {
+            print!("{}", DRIVERS);
+            println!("\nBuilt-in driver types: {}", structure_drivers::registry().kinds().join(", "));
             Ok(ExitCode::SUCCESS)
         }
     }

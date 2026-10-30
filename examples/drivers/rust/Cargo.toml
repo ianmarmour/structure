@@ -1,0 +1,15 @@
+[package]
+name = "structure-driver-example"
+description = "Example of an I/O driver built as a shared library for the structure runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "signal_generator"
+crate-type = ["cdylib"]
+
+[dependencies]
+structure-runtime = { path = "../../../crates/structure-runtime" }
+serde_json = "1"
