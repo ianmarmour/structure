@@ -2216,3 +2216,161 @@ fn f8_agv_sfc() {
         ]
     );
 }
+
+// ---------------------------------------------------------------- robustness
+
+/// Random drawings made of drawing characters and short names must never
+/// make the parser panic.
+#[test]
+fn random_drawings_do_not_panic() {
+    use structure_syntax::graphic::parse_graphic;
+    use structure_syntax::source::{FileId, SourceFile};
+    let pieces = [
+        "-", "-", "-", "|", "|", "+", "+", "=", "*", " ", " ", " ", " ", "O", "<", ">", "(", ")", "/", "a", "X1", "| |", "( )", "+---+", "|IN", "Q|", ">>L",
+        "<RETURN>", ">C>", "+ x", "||", "+===+", "S1", "N", "T#1s", "'s'", "[", "]", "#", "%IX1", "-1", ":", "L:", "\t", "é",
+    ];
+    let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for _ in 0..3000 {
+        let rows = (next() % 12) as usize + 1;
+        let mut text = String::new();
+        for _ in 0..rows {
+            let n = (next() % 14) as usize;
+            for _ in 0..n {
+                text.push_str(pieces[(next() % pieces.len() as u64) as usize]);
+            }
+            text.push('\n');
+        }
+        let file = SourceFile::new(FileId(0), "fuzz", text.clone());
+        let _ = parse_graphic(&file, 0, &text);
+    }
+    // structured noise: real drawings with characters knocked out
+    let samples = [
+        "|  a     b      c  |\n+--| |---| |--( )--+\n|                  |\n",
+        "    +-----+\na---| >=1 |---c\nb---|     |\n    +-----+\n",
+        "  +==+===+\n  || S1 ||\n  +==+===+\n     |\n     + a\n     |\n  +--+--+   +---+----+\n  | S2  |---| N | A1 |\n  +-----+   +---+----+\n",
+        "     +-----*------+\n     |            |\n     + e          + f\n     |            |\n  +--+--+      +--+--+\n  | S6  |      | S8  |\n  +-----+      +-----+\n",
+    ];
+    for s in samples {
+        let chars: Vec<char> = s.chars().collect();
+        for k in 0..chars.len() {
+            for rep in [' ', '+', '-', '|', '='] {
+                let mut c = chars.clone();
+                if c[k] == '\n' {
+                    continue;
+                }
+                c[k] = rep;
+                let text: String = c.into_iter().collect();
+                let file = SourceFile::new(FileId(0), "fuzz", text.clone());
+                let _ = parse_graphic(&file, 0, &text);
+            }
+        }
+    }
+}
+
+#[test]
+fn sfc_inside_an_action_body_table_42_2s() {
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        SFC_DECL,
+        r#"
+  +==+===+
+  || S1 ||
+  +==+===+
+     |
+     + a
+     |
+  +--+--+   +---+-----------------+
+  | S2  |---| N |   OPEN_VALVE_1  |
+  +--+--+   +---+-----------------+
+     |      |                     |
+     + b    | +=======+=======+   |
+     |      | ||  V1_READY   ||   |
+  +--+--+   | +=======+=======+   |
+  | S3  |   |         |           |
+  +-----+   |         + STEP8.X   |
+            |         |           |
+            |    +----+-----+     |
+            |    |V1_OPENING|     |
+            |    +----------+     |
+            +---------------------+
+"#,
+    ))
+    .ok();
+    assert_eq!(steps(&p), ["*S1", "S2 OPEN_VALVE_1(N)", "S3"]);
+    assert_eq!(transitions(&p), ["S1 -> S2 : a", "S2 -> S3 : b"]);
+    let s = sfc_of(&p);
+    assert_eq!(s.actions.len(), 1);
+    let Body::Graphic(g) = &s.actions[0].body else { panic!() };
+    assert_eq!(g.language, GraphicLanguage::Sfc);
+    let inner = g.sfc.as_deref().unwrap();
+    assert_eq!(inner.steps.iter().map(|s| s.name.text.clone()).collect::<Vec<_>>(), ["V1_READY", "V1_OPENING"]);
+    assert!(inner.steps[0].initial);
+    assert_eq!(inner.transitions.len(), 1);
+}
+
+#[test]
+fn textual_elements_after_a_chart_are_not_part_of_the_drawing() {
+    use structure_syntax::graphic::{parse_graphic, textual_tail};
+    use structure_syntax::source::{FileId, SourceFile};
+    let text = "  +==+===+\n  || S1 ||\n  +==+===+\n     |\n     + T1\n     |\n  +--+--+\n  | S2  |\n  +-----+\nTRANSITION T1 FROM S1 TO S2 := TRUE; END_TRANSITION\n  ACTION A1: X := 1; END_ACTION\n";
+    assert_eq!(textual_tail(text), Some(9));
+    assert_eq!(textual_tail("| a |\n+-| |-+\n"), None);
+    let file = SourceFile::new(FileId(0), "t", text);
+    let (g, diags) = parse_graphic(&file, 0, text);
+    assert!(diags.iter().all(|d| d.severity != Severity::Error), "{:?}", diags);
+    let s = g.sfc.as_deref().unwrap();
+    assert_eq!(s.steps.len(), 2);
+    assert_eq!(s.transitions.len(), 1);
+    assert!(matches!(s.transitions[0].condition, TransitionCondition::Named));
+    assert_eq!(s.transitions[0].name.as_ref().unwrap().text, "T1");
+}
+
+#[test]
+fn f3_fwd_rev_mon_ld_function_blocks_with_contacts() {
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        "VAR_INPUT AUTO, ACK, AUTO_FWD, MAN_FWD, MAN_FWD_CHK, FWD_FDBK : BOOL; T_FWD_MAX : TIME; END_VAR
+VAR_OUTPUT FWD_ALRM : BOOL; END_VAR VAR FWD_MON : CMD_MONITOR; END_VAR",
+        r#"
+|                   FWD_MON                  |
+|              +---------------+             |
+| AUTO_FWD     |  CMD_MONITOR  |             |
++--| |---------|AUTO_CMD    CMD|             |
+| AUTO         |               |  FWD_ALRM   |
++--| |---------|AUTO_MODE  ALRM|-----( )-----+
+| MAN_FWD      |               |             |
++--| |---------|MAN_CMD        |             |
+| MAN_FWD_CHK  |               |             |
++--| |---------|MAN_CMD_CHK    |             |
+| FWD_FDBK     |               |             |
++--| |---------|FDBK           |             |
+| ACK          |               |             |
++--| |---------|ACK            |             |
+|              |               |             |
+| T_FWD_MAX----|T_CMD_MAX      |             |
+|              +---------------+             |
+|                                            |
+"#,
+    ))
+    .ok();
+    let g = p.graphic();
+    assert_eq!(g.language, GraphicLanguage::Ld);
+    assert_eq!(g.networks.len(), 1);
+    let nets = p.nets(&g.networks[0]);
+    for c in ["AUTO_FWD", "AUTO", "MAN_FWD", "MAN_FWD_CHK", "FWD_FDBK", "ACK"] {
+        assert!(has(&nets, &format!("LeftRail -> NO({})", c)), "{:?}", nets);
+    }
+    assert!(has(&nets, "NO(AUTO_FWD) -> FWD_MON:CMD_MONITOR.AUTO_CMD"), "{:?}", nets);
+    assert!(has(&nets, "NO(MAN_FWD_CHK) -> FWD_MON:CMD_MONITOR.MAN_CMD_CHK"), "{:?}", nets);
+    assert!(has(&nets, "Src(T_FWD_MAX) -> FWD_MON:CMD_MONITOR.T_CMD_MAX"), "{:?}", nets);
+    assert!(has(&nets, "FWD_MON:CMD_MONITOR.ALRM -> Coil(FWD_ALRM)"), "{:?}", nets);
+    let (i, o) = pins(block(&g.networks[0], "CMD_MONITOR"));
+    assert_eq!(i.len(), 7);
+    assert_eq!(o.iter().map(|x| x.0.clone().unwrap()).collect::<Vec<_>>(), ["CMD", "ALRM"]);
+}
