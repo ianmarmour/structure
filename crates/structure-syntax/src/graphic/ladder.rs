@@ -270,21 +270,15 @@ impl<'a> NetCtx<'a> {
             for (s0, e0, t) in words {
                 let tl = s0 == a;
                 let tr = e0 == z;
+                if let Some((l, rr)) = in_out_split(&t) {
+                    // VAR_IN_OUT drawn through the block: `|V---V|`
+                    let le = s0 + l.chars().count() - 1;
+                    let rs = e0 + 1 - rr.chars().count();
+                    lname.insert(r, (s0, le, l));
+                    rname.insert(r, (rs, e0, rr));
+                    continue;
+                }
                 if tl && tr {
-                    if lrows.contains_key(&r) && rrows.contains_key(&r) && t.contains("--") {
-                        // VAR_IN_OUT drawn through the block: `|V---V|`
-                        let i = t.find("--").unwrap_or(0);
-                        let j = t.rfind("--").map(|j| j + 2).unwrap_or(t.len());
-                        let l = t[..i].trim_end_matches('-').to_string();
-                        let rr = t[j..].trim_start_matches('-').to_string();
-                        if !l.is_empty() {
-                            lname.insert(r, (s0, s0 + l.chars().count() - 1, l));
-                        }
-                        if !rr.is_empty() {
-                            rname.insert(r, (e0 + 1 - rr.chars().count(), e0, rr));
-                        }
-                        continue;
-                    }
                     middle.entry(r).or_default().push((s0, e0, t));
                 } else if tl {
                     lname.insert(r, (s0, e0, t));
@@ -654,6 +648,20 @@ impl super::scan::Elem {
         } else {
             String::new()
         }
+    }
+}
+
+/// `NAME---NAME`: an in-out parameter drawn as a line through a block.
+fn in_out_split(t: &str) -> Option<(String, String)> {
+    let i = t.find("--")?;
+    let j = t.rfind("--")? + 2;
+    let l = t[..i].trim_end_matches('-');
+    let r = t[j..].trim_start_matches('-');
+    let ident = |x: &str| x.chars().next().is_some_and(super::scan::is_ident_start) && x.chars().all(super::scan::is_ident_char);
+    if ident(l) && ident(r) && t[i..j].chars().all(|c| c == '-') {
+        Some((l.to_string(), r.to_string()))
+    } else {
+        None
     }
 }
 
