@@ -125,6 +125,9 @@ pub struct SfcLayout {
 pub struct SfcStepLayout {
     pub name: String,
     pub initial: bool,
+    /// The step belongs to a chart included in an action (table 42
+    /// feature 2s); its initial step is activated with the action.
+    pub nested: bool,
     /// Offsets of X (BOOL), T (TIME) and the activation time (TIME).
     pub x: u64,
     pub t: u64,

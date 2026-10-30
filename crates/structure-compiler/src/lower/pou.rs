@@ -68,11 +68,11 @@ impl<'s> Ctx<'s> {
                 l.language = Lang::Il;
                 l.il_body(&mut out, list);
             }
-            Body::Sfc(sfc) => l.sfc_body(&mut out, sfc),
+            Body::Sfc(sfc) => l.sfc_body(&mut out, sfc, false),
             Body::Graphic(g) => {
                 l.language = Lang::Graphic;
                 if let Some(sfc) = &g.sfc {
-                    l.sfc_body(&mut out, sfc);
+                    l.sfc_body(&mut out, sfc, true);
                 } else {
                     l.graphic_body(&mut out, g);
                 }
@@ -107,7 +107,7 @@ impl<'s> Ctx<'s> {
         l.init_vars(&mut out, &[VKind::Input, VKind::Output, VKind::Local, VKind::Global, VKind::Hidden]);
         if let Some(sfc) = l.cx.pous[pi].sfc.clone() {
             for s in &sfc.steps {
-                if s.initial {
+                if s.initial && !s.nested {
                     out.push(St::Store(Ty::Bool, Loc::Ip(s.x as u32), Ex::bool(true)));
                 }
             }

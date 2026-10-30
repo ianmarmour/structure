@@ -92,6 +92,12 @@ pub struct Lowerer<'c, 's> {
     /// The SFC being lowered is graphical: selection divergences without
     /// priority marks require mutually exclusive conditions (table 46 2c).
     pub graphic_2c: bool,
+    /// Declarations of the SFC of the POU being lowered, shared by the
+    /// charts included in its actions.
+    pub sfc_scope: Option<std::rc::Rc<sfc::SfcScope>>,
+    /// Actions whose bodies are being lowered (to reject an action that
+    /// includes itself).
+    pub sfc_lowering: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,7 +111,7 @@ impl<'c, 's> Lowerer<'c, 's> {
     pub fn new(cx: &'c mut Ctx<'s>, pou: usize) -> Self {
         let kind = cx.pous[pou].kind;
         let frame_top = cx.pous[pou].frame_base;
-        Lowerer { cx, pou, kind, frame_top, next_label: 1, loops: Vec::new(), return_label: 0, for_vars: Vec::new(), region: Region::Body, language: Lang::St, lit_hint: None, synth: Default::default(), synth_count: 0, il_hint: None, graphic_2c: false }
+        Lowerer { cx, pou, kind, frame_top, next_label: 1, loops: Vec::new(), return_label: 0, for_vars: Vec::new(), region: Region::Body, language: Lang::St, lit_hint: None, synth: Default::default(), synth_count: 0, il_hint: None, graphic_2c: false, sfc_scope: None, sfc_lowering: Vec::new() }
     }
 
     pub fn label(&mut self) -> u32 {

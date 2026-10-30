@@ -296,25 +296,28 @@ impl<'s> Ctx<'s> {
             Body::Graphic(g) => g.sfc.as_ref().map(|s| (**s).clone()),
             _ => None,
         };
-        let mut sfc_steps: Vec<(String, bool)> = Vec::new();
+        let mut sfc_steps: Vec<(String, bool, bool)> = Vec::new();
         let mut sfc_actions: Vec<String> = Vec::new();
         if let Some(s) = &sfc {
             if kind == PouKind::Function {
                 self.error_clause("2.6.1", "SFC elements can only be used in function blocks and programs", span);
             }
-            for st in &s.steps {
-                if !sfc_steps.iter().any(|(n, _)| *n == st.name.key()) {
-                    sfc_steps.push((st.name.key(), st.initial));
-                }
-                for a in &st.associations {
-                    if !sfc_actions.contains(&a.action.key()) {
-                        sfc_actions.push(a.action.key());
+            // the chart of the body and the charts included in actions
+            for (ci, chart) in crate::visit::sfc_charts(s).into_iter().enumerate() {
+                for st in &chart.steps {
+                    if !sfc_steps.iter().any(|(n, _, _)| *n == st.name.key()) {
+                        sfc_steps.push((st.name.key(), st.initial, ci > 0));
+                    }
+                    for a in &st.associations {
+                        if !sfc_actions.contains(&a.action.key()) {
+                            sfc_actions.push(a.action.key());
+                        }
                     }
                 }
-            }
-            for a in &s.actions {
-                if !sfc_actions.contains(&a.name.key()) {
-                    sfc_actions.push(a.name.key());
+                for a in &chart.actions {
+                    if !sfc_actions.contains(&a.name.key()) {
+                        sfc_actions.push(a.name.key());
+                    }
                 }
             }
         }
@@ -378,13 +381,13 @@ impl<'s> Ctx<'s> {
         let mut sfc_layout = None;
         if sfc.is_some() && !is_fn {
             let mut layout = SfcLayout::default();
-            for (name, initial) in &sfc_steps {
+            for (name, initial, nested) in &sfc_steps {
                 off = round8(off);
                 let x = off;
                 let t = x + 8;
                 let start = t + 64;
                 off = start + 64;
-                layout.steps.push(SfcStepLayout { name: name.clone(), initial: *initial, x, t, start });
+                layout.steps.push(SfcStepLayout { name: name.clone(), initial: *initial, nested: *nested, x, t, start });
             }
             let ac = self.pou_by_name.get("__ACTION_CONTROL").copied();
             if let Some(ac) = ac {

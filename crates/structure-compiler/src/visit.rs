@@ -251,3 +251,32 @@ pub fn edge_elements(body: &Body) -> Vec<structure_syntax::graphic::Node> {
     }
     out
 }
+
+/// The SFC of a body, textual or graphical.
+pub fn body_sfc(b: &Body) -> Option<&Sfc> {
+    match b {
+        Body::Sfc(s) => Some(s),
+        Body::Graphic(g) => g.sfc.as_deref(),
+        _ => None,
+    }
+}
+
+/// A chart and the charts included in its actions (table 42 feature 2s),
+/// depth first; the first element is `sfc` itself.
+pub fn sfc_charts(sfc: &Sfc) -> Vec<&Sfc> {
+    let mut out = vec![sfc];
+    let mut i = 0;
+    while i < out.len() {
+        let c = out[i];
+        for a in &c.actions {
+            if let Some(n) = body_sfc(&a.body) {
+                // an action can (erroneously) include its own chart
+                if !out.iter().any(|x| std::ptr::eq(*x, n)) {
+                    out.push(n);
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}

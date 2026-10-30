@@ -43,29 +43,89 @@ struct Assoc {
     span: Span,
 }
 
+/// The declarations of the SFC of a POU: steps and actions are local to
+/// the POU, whichever chart (that of the body, or one included in an
+/// action, table 42 feature 2s) declares them.
+pub struct SfcScope {
+    actions: HashMap<String, ast::Action>,
+    /// Chart (identified by its span) whose evolution controls each
+    /// action: the chart whose steps are associated with it, otherwise
+    /// the chart declaring it.
+    action_chart: HashMap<String, Span>,
+    step_chart: HashMap<String, Span>,
+}
+
 impl<'c, 's> Lowerer<'c, 's> {
-    pub fn sfc_body(&mut self, out: &mut Vec<St>, sfc: &Sfc) {
-        let Some(layout) = self.cx.pous[self.pou].sfc.clone() else {
+    /// Lowers the SFC of a POU body.
+    pub fn sfc_body(&mut self, out: &mut Vec<St>, sfc: &Sfc, graphic: bool) {
+        if self.cx.pous[self.pou].sfc.is_none() {
             self.cx.error_clause("2.6.1", "SFC elements can only be used in function blocks and programs", sfc.span);
             return;
+        }
+        let charts = crate::visit::sfc_charts(sfc);
+        let mut step_chart = HashMap::new();
+        for c in &charts {
+            for s in &c.steps {
+                if step_chart.insert(s.name.key(), c.span).is_some() {
+                    self.cx.error_clause("2.6.2", format!("duplicate step name {}", s.name), s.name.span);
+                }
+                if self.cx.pous[self.pou].var_map.contains_key(&s.name.key()) {
+                    self.cx.error_clause("2.6.2", format!("the step name {} is already used for a variable", s.name), s.name.span);
+                }
+            }
+        }
+        let mut actions = HashMap::new();
+        for c in &charts {
+            for a in &c.actions {
+                if actions.insert(a.name.key(), a.clone()).is_some() {
+                    self.cx.error_clause("2.6.4.1", format!("duplicate action {}", a.name), a.name.span);
+                }
+            }
+        }
+        let mut action_chart: HashMap<String, Span> = HashMap::new();
+        for c in &charts {
+            for s in &c.steps {
+                for a in &s.associations {
+                    match action_chart.get(&a.action.key()) {
+                        Some(other) if *other != c.span => self.cx.error_clause(
+                            "2.6.4.2",
+                            format!("the action {} is associated with steps of different charts (implementation restriction)", a.action),
+                            a.action.span,
+                        ),
+                        _ => {
+                            action_chart.insert(a.action.key(), c.span);
+                        }
+                    }
+                }
+            }
+        }
+        for c in &charts {
+            for a in &c.actions {
+                action_chart.entry(a.name.key()).or_insert(c.span);
+            }
+        }
+        let saved = self.sfc_scope.replace(std::rc::Rc::new(SfcScope { actions, action_chart, step_chart }));
+        self.sfc_chart(out, sfc, graphic, None);
+        self.sfc_scope = saved;
+    }
+
+    /// Lowers one chart. A chart included in an action (`enclosing` gives
+    /// the Q output of the action's control block) is executed with the
+    /// action: its initial step is activated when the action becomes
+    /// active, it evolves while the action is active, and all its steps
+    /// are deactivated in the final scan of the action, which is also the
+    /// final scan of its own active actions (enclosure, as in IEC 60848).
+    fn sfc_chart(&mut self, out: &mut Vec<St>, sfc: &Sfc, graphic: bool, enclosing: Option<Ex>) {
+        let scope = self.sfc_scope.clone().expect("SFC scope");
+        let full = self.cx.pous[self.pou].sfc.clone().unwrap();
+        let layout = crate::ctx::SfcLayout {
+            steps: full.steps.iter().filter(|s| scope.step_chart.get(&s.name) == Some(&sfc.span)).cloned().collect(),
+            actions: full.actions.iter().filter(|a| scope.action_chart.get(&a.name).map_or(enclosing.is_none(), |c| *c == sfc.span)).cloned().collect(),
         };
+        let saved_2c = self.graphic_2c;
+        self.graphic_2c = graphic;
         let step_index: HashMap<String, usize> = layout.steps.iter().enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
-        // ---------------------------------------------------------- checks
-        let mut seen = HashSet::new();
-        for s in &sfc.steps {
-            if !seen.insert(s.name.key()) {
-                self.cx.error_clause("2.6.2", format!("duplicate step name {}", s.name), s.name.span);
-            }
-            if self.cx.pous[self.pou].var_map.contains_key(&s.name.key()) {
-                self.cx.error_clause("2.6.2", format!("the step name {} is already used for a variable", s.name), s.name.span);
-            }
-        }
-        let mut action_decl: HashMap<String, &ast::Action> = HashMap::new();
-        for a in &sfc.actions {
-            if action_decl.insert(a.name.key(), a).is_some() {
-                self.cx.error_clause("2.6.4.1", format!("duplicate action {}", a.name), a.name.span);
-            }
-        }
+        let action_decl: HashMap<String, &ast::Action> = scope.actions.iter().map(|(k, a)| (k.clone(), a)).collect();
         // Transitions, with named transitions resolved.
         let mut named: HashMap<String, &ast::Transition> = HashMap::new();
         for t in &sfc.transitions {
@@ -89,6 +149,9 @@ impl<'c, 's> Lowerer<'c, 's> {
                 for s in list.iter() {
                     match step_index.get(&s.key()) {
                         Some(i) => dst.push(*i),
+                        None if scope.step_chart.contains_key(&s.key()) => {
+                            self.cx.error_clause("2.6.3", format!("the step {} belongs to another chart", s), s.span)
+                        }
                         None => self.cx.error_clause("2.6.3", format!("unknown step {}", s), s.span),
                     }
                 }
@@ -99,9 +162,31 @@ impl<'c, 's> Lowerer<'c, 's> {
             transitions.push((t, from, to));
         }
         self.sfc_static_checks(&layout, &transitions, sfc);
+        let time = Ty::I64;
+
+        // ---------------------------------------------------------- 0. enclosure
+        if let Some(q) = &enclosing {
+            let x = |s: &crate::ctx::SfcStepLayout| Ex::Load(Ty::Bool, Loc::Ip(s.x as u32));
+            let any = layout.steps.iter().map(x).reduce(Ex::or).unwrap_or(Ex::bool(false));
+            let mut activate = Vec::new();
+            for s in layout.steps.iter().filter(|s| s.initial) {
+                activate.push(St::Store(Ty::Bool, Loc::Ip(s.x as u32), Ex::bool(true)));
+                activate.push(St::Store(time, Loc::Ip(s.start as u32), Ex::Now));
+                activate.push(St::Store(time, Loc::Ip(s.t as u32), Ex::Const(time, 0)));
+            }
+            let mut deactivate = Vec::new();
+            for s in &layout.steps {
+                let et = Ex::Bin(BinOp::Sub, time, Box::new(Ex::Now), Box::new(Ex::Load(time, Loc::Ip(s.start as u32))));
+                deactivate.push(St::If(
+                    x(s),
+                    vec![St::Store(time, Loc::Ip(s.t as u32), et), St::Store(Ty::Bool, Loc::Ip(s.x as u32), Ex::bool(false))],
+                    vec![],
+                ));
+            }
+            out.push(St::If(q.clone(), vec![St::If(Ex::not(any), activate, vec![])], deactivate));
+        }
 
         // ---------------------------------------------------------- 1. step times
-        let time = Ty::I64;
         for s in &layout.steps {
             let x = Ex::Load(Ty::Bool, Loc::Ip(s.x as u32));
             let et = Ex::Bin(BinOp::Sub, time, Box::new(Ex::Now), Box::new(Ex::Load(time, Loc::Ip(s.start as u32))));
@@ -193,7 +278,25 @@ impl<'c, 's> Lowerer<'c, 's> {
                 self.return_label = end;
                 let saved_region = self.region;
                 self.region = Region::Action;
-                self.action_body(&mut body, &decl.body);
+                if self.sfc_lowering.contains(&a.name) {
+                    self.cx.error_clause("2.6.4.1", format!("the action {} includes a chart that controls the action itself", decl.name), decl.name.span);
+                } else {
+                    self.sfc_lowering.push(a.name.clone());
+                    match crate::visit::body_sfc(&decl.body) {
+                        // table 42 feature 2s
+                        Some(chart) => {
+                            let graphic = matches!(decl.body, Body::Graphic(_));
+                            let saved_lang = self.language;
+                            if graphic {
+                                self.language = Lang::Graphic;
+                            }
+                            self.sfc_chart(&mut body, chart, graphic, Some(Ex::Load(Ty::Bool, ctrl.clone().offset(qoff))));
+                            self.language = saved_lang;
+                        }
+                        None => self.action_body(&mut body, &decl.body),
+                    }
+                    self.sfc_lowering.pop();
+                }
                 self.region = saved_region;
                 self.return_label = saved_ret;
                 body.push(St::Label(end));
@@ -218,6 +321,8 @@ impl<'c, 's> Lowerer<'c, 's> {
         }
 
         // ---------------------------------------------------------- 3. evolution
+        // (an included chart evolves only while its action is active)
+        let evolution_start = out.len();
         // conditions (no side effects allowed, 2.6.3)
         let n = transitions.len();
         let mut conds = Vec::new();
@@ -326,6 +431,11 @@ impl<'c, 's> Lowerer<'c, 's> {
             }
             out.push(St::If(Ex::Load(Ty::Bool, cleared[i].clone()), body, vec![]));
         }
+        if let Some(q) = enclosing {
+            let evolution: Vec<St> = out.drain(evolution_start..).collect();
+            out.push(St::If(q, evolution, vec![]));
+        }
+        self.graphic_2c = saved_2c;
     }
 
     fn is_graphic_unprioritised(&self, t: &ast::Transition) -> bool {
@@ -352,14 +462,14 @@ impl<'c, 's> Lowerer<'c, 's> {
                 self.il_body(out, l);
                 self.language = saved;
             }
-            Body::Graphic(g) if g.sfc.is_none() => {
+            Body::Graphic(g) => {
                 let saved = self.language;
                 self.language = Lang::Graphic;
                 self.graphic_body(out, g);
                 self.language = saved;
             }
-            Body::Sfc(s) => self.cx.error_clause("2.6.4.1", "SFC elements inside actions (table 42 feature 2s) are not supported by this implementation", s.span),
-            Body::Graphic(g) => self.cx.error_clause("2.6.4.1", "SFC elements inside actions (table 42 feature 2s) are not supported by this implementation", g.span),
+            // charts included in actions are lowered by sfc_chart
+            Body::Sfc(_) => {}
         }
     }
 

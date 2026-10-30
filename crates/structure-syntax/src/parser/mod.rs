@@ -402,10 +402,19 @@ impl<'a> Parser<'a> {
     /// Index of the token terminating a body that ends with `end_kw`.
     fn find_end(&self, end_kw: Keyword) -> usize {
         let mut i = self.pos;
+        // actions can contain charts with actions of their own (table 42
+        // feature 2s)
+        let mut depth = 0;
         while i < self.limit {
             let k = self.toks[i].kind;
+            if end_kw == Keyword::EndAction && k == TokenKind::Kw(Keyword::Action) {
+                depth += 1;
+            }
             if k == TokenKind::Kw(end_kw) {
-                return i;
+                if depth == 0 {
+                    return i;
+                }
+                depth -= 1;
             }
             if self.toks[i].nl_before
                 && matches!(
