@@ -2,6 +2,7 @@
 
 mod config;
 mod decl;
+mod graphic_decl;
 mod il;
 mod sfc;
 mod st;
@@ -353,20 +354,45 @@ impl<'a> Parser<'a> {
     fn pou(&mut self, kw: Keyword) -> Pou {
         let start = self.span();
         self.bump();
-        let name = self.expect_ident("a name").unwrap_or_else(|| Ident::new("?", start));
+        // graphical declaration of the external interface (figures 6 b, 11)
+        let graphic = if self.at(TokenKind::Plus) { Some(self.graphic_interface(kw == Keyword::Function)) } else { None };
+        let mut var_blocks = Vec::new();
+        let (name, graphic_result) = match graphic {
+            Some(Some(i)) => {
+                var_blocks = i.blocks;
+                (i.name, Some(i.result))
+            }
+            Some(None) => {
+                // skip the malformed drawing
+                while !self.at_eof() && !matches!(self.kind(0), TokenKind::Kw(k) if k.as_str().starts_with("VAR") || k.as_str().starts_with("END_")) {
+                    self.bump();
+                }
+                (Ident::new("?", start), Some(None))
+            }
+            None => (self.expect_ident("a name").unwrap_or_else(|| Ident::new("?", start)), None),
+        };
         let (kind, end_kw) = match kw {
             Keyword::Function => {
-                let result = if self.expect(TokenKind::Colon) {
-                    self.type_spec()
-                } else {
-                    TypeSpec::Named(Ident::new("?", self.span()))
+                let result = match graphic_result {
+                    Some(Some(t)) => t,
+                    Some(None) => {
+                        if name.text != "?" {
+                            self.diags.push(Diagnostic::error(
+                                "the graphical declaration of a function shall show the type of its result as an unnamed output",
+                                name.span,
+                            ));
+                        }
+                        TypeSpec::Named(Ident::new("?", name.span))
+                    }
+                    None if self.expect(TokenKind::Colon) => self.type_spec(),
+                    None => TypeSpec::Named(Ident::new("?", self.span())),
                 };
                 (PouKind::Function { result }, Keyword::EndFunction)
             }
             Keyword::FunctionBlock => (PouKind::FunctionBlock, Keyword::EndFunctionBlock),
             _ => (PouKind::Program, Keyword::EndProgram),
         };
-        let var_blocks = self.var_blocks();
+        var_blocks.extend(self.var_blocks());
         let body = self.body(end_kw);
         let end = self.span();
         if !self.eat_kw(end_kw) {
