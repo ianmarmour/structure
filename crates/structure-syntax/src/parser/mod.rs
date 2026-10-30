@@ -453,7 +453,33 @@ impl<'a> Parser<'a> {
             BodyLang::SfcText => Body::Sfc(self.sfc_text()),
             BodyLang::Graphic => {
                 let first = if start < end { self.toks[start].span.start } else { start_off };
-                let g = self.graphic_region(first, end_off);
+                // A graphical SFC can be followed by textual declarations of
+                // its actions and named transitions (2.6.4.1, table 41
+                // feature 7).
+                let split = self.textual_sfc_start(start, end);
+                let graphic_end = match split {
+                    Some(k) => self.file.line_start(self.file.line_col(self.toks[k].span.start).0 as usize - 1),
+                    None => end_off,
+                };
+                let mut g = self.graphic_region(first, graphic_end);
+                if let Some(k) = split {
+                    self.pos = k;
+                    let textual = self.sfc_text();
+                    match g.sfc.as_deref_mut() {
+                        Some(sfc) => {
+                            sfc.steps.extend(textual.steps);
+                            sfc.transitions.extend(textual.transitions);
+                            sfc.actions.extend(textual.actions);
+                        }
+                        None => self.diags.push(Diagnostic::error(
+                            "action and transition declarations can only accompany a sequential function chart",
+                            self.toks[k].span,
+                        )),
+                    }
+                    // keep the whole body for writing it back out
+                    g.text = self.region_text(first, end_off).1;
+                    g.span = g.span.to(self.toks[end - 1].span);
+                }
                 self.pos = end;
                 Body::Graphic(g)
             }
@@ -505,16 +531,36 @@ impl<'a> Parser<'a> {
     /// Extracts the semigraphic text between two byte offsets (keeping
     /// column positions) and hands it to the graphical parser.
     pub(crate) fn graphic_region(&mut self, start_off: u32, end_off: u32) -> GraphicBody {
+        let (line_start, text) = self.region_text(start_off, end_off);
+        let (body, diags) = crate::graphic::parse_graphic(self.file, line_start, &text);
+        self.diags.extend(diags);
+        body
+    }
+
+    /// The text between two byte offsets, starting at the beginning of the
+    /// first line so that columns are preserved; anything on that line
+    /// preceding `start_off` is blanked out.
+    fn region_text(&self, start_off: u32, end_off: u32) -> (u32, String) {
         let (line, _) = self.file.line_col(start_off);
         let line_start = self.file.line_start(line as usize - 1);
         let mut text = String::new();
-        // Blank out anything on the first line that precedes the body.
         for c in self.file.text[line_start as usize..start_off as usize].chars() {
             text.push(if c == '\t' { '\t' } else { ' ' });
         }
         text.push_str(&self.file.text[start_off as usize..end_off as usize]);
-        let (body, diags) = crate::graphic::parse_graphic(self.file, line_start, &text);
-        self.diags.extend(diags);
-        body
+        (line_start, text)
+    }
+
+    /// Index of the first ACTION or TRANSITION keyword that begins a line
+    /// of a graphical body, where its textual SFC declarations start.
+    fn textual_sfc_start(&self, start: usize, end: usize) -> Option<usize> {
+        (start..end).find(|&i| {
+            let t = &self.toks[i];
+            matches!(t.kind, TokenKind::Kw(Keyword::Action) | TokenKind::Kw(Keyword::Transition)) && {
+                let (line, _) = self.file.line_col(t.span.start);
+                let ls = self.file.line_start(line as usize - 1) as usize;
+                self.file.text[ls..t.span.start as usize].trim().is_empty()
+            }
+        })
     }
 }
