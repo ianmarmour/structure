@@ -1,0 +1,374 @@
+//! End-to-end tests of graphical SFC bodies (2.6, semigraphic form).
+mod common;
+use common::*;
+use structure_runtime::Value;
+
+const CFG: &str = "CONFIGURATION C RESOURCE R ON VM TASK T(INTERVAL := T#10ms, PRIORITY := 1); PROGRAM P1 WITH T : P; END_RESOURCE END_CONFIGURATION";
+
+fn set(rt: &mut structure_runtime::Runtime, k: &str, v: bool) {
+    rt.write(&format!("R.P1.{}", k), &Value::Bool(v)).unwrap();
+}
+
+// Drawings of annex F (as in the parser tests of structure-syntax).
+const MIX_2_BRIX_SFC: &str = r#"
+     +-------------->-----------------+
+     |                                |
+     |                           +====+====+   +---+------+
+     |                           || START ||---| N | DONE |
+     |                           +====+====+   +---+------+
+     |                                |
+     |                                + ST & S0 & BCD_TO_INT(WC) <= z
+     |                                |
+     |     ===+=======================+=================+=======
+     |        |                                         |
+     |   +----+----+   +---+----+                   +---+----+   +---+----+
+     |   | WEIGH_A |---| N | VA |                   | BRICK1 |---| S | MT |
+     |   +----+----+   +---+----+                   +---+----+   +---+----+
+     |        |                                         |
+     |        + BCD_TO_INT(WC) >= WA+z                  + d
+     |        |                                         |
+     |   +----+----+   +---+----+                   +---+----+
+     |   | WEIGH_B |---| N | VB |                   | DROP_1 |
+     |   +----+----+   +---+----+                   +---+----+
+     |        |                                         |
+     |        + BCD_TO_INT(WC) >= WA+WB+z               + NOT d
+     |        |                                         |
+     |     +--+---+   +---+----+                    +---+----+
+     |     | FILL |---| N | VC |                    | BRICK2 |
+     |     +--+---+   +---+----+                    +---+----+
+     |        |                                         + d
+     |        |                                     +---+----+   +---+----+
+     |        |                                     | DROP_2 |---| R | MT |
+     |        |                                     +---+----+   +---+----+
+     |        |                                         |
+     |     ===+=======================+=================+=======
+     |                                |
+     |                                + BCD_TO_INT(WC) <= z & NOT d
+     |                                |
+     |                             +--+--+   +---+----+
+     |                             | MIX |---| S | MR |
+     |                             +--+--+   +---+----+
+     |                                |
+     |                                + MIX.T >= t1
+     |                                |
+     |                             +--+--+   +---+-----+----+
+     |                             | TIP |---| N | MP1 | S1 |
+     |                             +--+--+   +---+-----+----+
+     |                                |
+     |                                + S1
+     |                                |
+     |                            +---+---+   +---+-----+----+
+     |                            | RAISE |---| R | MR  |    |
+     |                            +---+---+   +---+-----+----+
+     |                                +S0     | N | MP0 | S0 |
+     |                                |       +---+-----+----+
+     +--------------<-----------------+
+"#;
+
+const GRAVEL_SEQUENCE_F4: &str = r#"
+  +----------------->-------------------+
+  |                                     |
+  |                                +====+====+
+  |                                || START ||
+  |                                +====+====+
+  |                                     |
+  |                                     + FILL_PB & CONTROL.X
+  |                                     |
+  |                                +----+-----+   +---+------------+
+  |                                | FILL_BIN |---| N | SILO_VALVE |
+  |                                +----+-----+   +---+------------+
+  |                                     |
+  |   +---------------------------------*
+  |   |                                 |
+  |   + NOT FILL_PB OR NOT CONTROL.X    + LEVEL_CTR.Q
+  |   |                                 |
+  +---+                                 |
+  |      +--------------->--------------+
+  |      |                        +-----+-----+
+  |      |                        | LOAD_WAIT |
+  |      |                        +-----+-----+
+  |      |                              |
+  |      |                              + LOAD_PB & OK_TO_RUN
+  |      |                              |
+  |      |                          +---+----+
+  |      |                          | RUN_IN |
+  |      |                          +---+----+
+  |      |                              |
+  |      |   +--------------------------*
+  |      |   |                          |
+  |      |   + NOT OK_TO_RUN            + RUN_IN.T >= RUN_IN_TIME
+  |      |   |                          |
+  |      +---+                          |
+  |      |                         +----+-----+   +---+-----------+
+  |      |                         | DUMP_BIN |---| N | BIN_VALVE |
+  |      |                         +----+-----+   +---+-----------+
+  |      |                              |
+  |      |   +--------------------------*
+  |      |   |                          |
+  |      |   + NOT OK_TO_RUN            + BIN_EMPTY_LS
+  |      |   |                          |
+  |      +---+                          |
+  |      |                          +---+----+
+  |      |                          | RUNOUT |
+  |      |                          +---+----+
+  |      |                              |
+  |      |   +--------------------------*
+  |      |   |                          |
+  |      |   + NOT OK_TO_RUN            + RUNOUT.T >= RUNOUT_TIME
+  |      |   |                          |
+  |      +---+                          |
+  |                                     |
+  +-------------------------------------+
+"#;
+
+const GRAVEL_CONTROL_F5: &str = r#"
+ +---------+
+ |         |
+ |         + OFF_PB
+ |         |
+ | +=======+=======+     +=====+=====+   +---+----------------+
+ | || CONTROL_OFF ||     || MONITOR ||---| N | MONITOR_ACTION |
+ | +=======+=======+     +===========+   +---+----------------+
+ |         |
+ |         + ON_PB & NOT OFF_PB
+ |         |
+ |     +---+---+   +---+---------------------------------+------+
+ |     |CONTROL|---| N |       CONTROL_ACTION            |      |
+ |     +---+---+   +---+---------------------------------+------+
+ |         |       |      +---------------------------------+   |
+ +---------+       |      |             BLINK       BLANK   |   |
+                   |      |    +-+     +-----+     +-----+  |   |
+                   |      +---O|&|     | TON |     | TON |  |   |
+                   |CONTROL.X--| |-----|IN  Q|-----|IN  Q|--+   |
+                   |           +-+  +--|PT   |  +--|PT   |      |
+                   |                |  +-----+  |  +-----+      |
+                   |    BLINK_TIME--+-----------+               |
+                   |               +-+                          |
+                   |CONTROL.X------|&|                          |
+                   |TRUCK_ON_RAMP--| |---+---------OK_TO_RUN    |
+                   |               +-+   |                      |
+                   |                     |  +-+                 |
+                   |            +-----+  +--|&|--CONVEYOR_MOTOR |
+                   |JOG_PB------| >=1 |-----| |                 |
+                   |RUN_IN.X----|     |     +-+                 |
+                   |DUMP_BIN.X--|     |                         |
+                   |RUNOUT.X----|     |                         |
+                   |            +-----+                         |
+                   +--------------------------------------------+
+"#;
+
+#[test]
+fn f5_mix_2_brix_graphical() {
+    let src = format!(
+        r#"
+FUNCTION_BLOCK MIX_2_BRIX
+VAR_INPUT ST, d, S0, S1 : BOOL; WC : WORD; z, WA, WB : INT; t1 : TIME; END_VAR
+VAR_OUTPUT DONE, VA, VB, VC, MT, MR, MP0, MP1 : BOOL; END_VAR
+{MIX_2_BRIX_SFC}END_FUNCTION_BLOCK
+
+PROGRAM P
+VAR M : MIX_2_BRIX; ST, d, S0, S1 : BOOL; WC : WORD; DONE, VA, VB, VC, MT, MR, MP0, MP1 : BOOL; END_VAR
+M(ST := ST, d := d, S0 := S0, S1 := S1, WC := WC, z := 0, WA := 10, WB := 5, t1 := T#40ms);
+DONE := M.DONE; VA := M.VA; VB := M.VB; VC := M.VC; MT := M.MT; MR := M.MR; MP0 := M.MP0; MP1 := M.MP1;
+END_PROGRAM
+{CFG}
+"#
+    );
+    let mut rt = build(&src);
+    let w = |rt: &mut structure_runtime::Runtime, v: i128| rt.write("R.P1.WC", &Value::Int(v)).unwrap();
+    rt.run_for(20_000);
+    assert!(boolean(&rt, "R.P1.DONE"));
+    set(&mut rt, "S0", true);
+    set(&mut rt, "ST", true);
+    rt.run_for(20_000);
+    assert!(boolean(&rt, "R.P1.VA") && boolean(&rt, "R.P1.MT"), "simultaneous divergence");
+    set(&mut rt, "ST", false);
+    w(&mut rt, 0x10);
+    rt.run_for(20_000);
+    assert!(boolean(&rt, "R.P1.VB") && !boolean(&rt, "R.P1.VA"));
+    w(&mut rt, 0x15);
+    rt.run_for(20_000);
+    assert!(boolean(&rt, "R.P1.VC"));
+    set(&mut rt, "d", true);
+    rt.run_for(20_000);
+    set(&mut rt, "d", false);
+    rt.run_for(20_000);
+    set(&mut rt, "d", true);
+    rt.run_for(20_000);
+    assert!(!boolean(&rt, "R.P1.MT"));
+    // simultaneous convergence
+    set(&mut rt, "d", false);
+    w(&mut rt, 0);
+    rt.run_for(20_000);
+    assert!(boolean(&rt, "R.P1.MR"));
+    rt.run_for(50_000);
+    assert!(boolean(&rt, "R.P1.MP1"));
+    set(&mut rt, "S1", true);
+    rt.run_for(20_000);
+    assert!(boolean(&rt, "R.P1.MP0") && !boolean(&rt, "R.P1.MR"));
+    rt.run_for(20_000);
+    assert!(boolean(&rt, "R.P1.DONE"), "the loop back to START");
+    assert!(rt.errors.is_empty(), "{:?}", rt.errors);
+}
+
+#[test]
+fn f7_gravel_graphical() {
+    let src = format!(
+        r#"
+PROGRAM GRAVEL
+VAR_INPUT
+  OFF_PB, ON_PB, FILL_PB, SIREN_ACK, LOAD_PB, JOG_PB, LAMP_TEST, TRUCK_ON_RAMP, SILO_EMPTY_LS, BIN_EMPTY_LS : BOOL;
+  SETPOINT : BYTE;
+END_VAR
+VAR_OUTPUT
+  CONTROL_LAMP, TRUCK_LAMP, SILO_EMPTY_LAMP, CONVEYOR_LAMP, CONVEYOR_MOTOR, SILO_VALVE, BIN_VALVE, SIREN : BOOL;
+  BIN_LEVEL : BYTE;
+END_VAR
+VAR
+  BLINK_TIME : TIME := T#200ms; PULSE_TIME : TIME := T#50ms; RUNOUT_TIME: TIME := T#300ms;
+  RUN_IN_TIME: TIME := T#200ms; SILENT_TIME: TIME := T#1s;
+  OK_TO_RUN : BOOL; BLINK: TON; BLANK: TON; PULSE: TON; SIREN_FF: RS; SILENCE_TMR: TP;
+END_VAR
+VAR RETAIN LEVEL_CTR : CTU ; END_VAR
+{GRAVEL_SEQUENCE_F4}
+{GRAVEL_CONTROL_F5}
+ACTION MONITOR_ACTION:
+  CONVEYOR_LAMP := CONVEYOR_MOTOR & BLINK.Q ;
+  CONTROL_LAMP := CONTROL.X OR LAMP_TEST ;
+  TRUCK_LAMP := TRUCK_ON_RAMP OR LAMP_TEST ;
+  SILO_EMPTY_LAMP := BLINK.Q & SILO_EMPTY_LS OR LAMP_TEST ;
+  SILENCE_TMR(IN:=SIREN_ACK, PT:=SILENT_TIME) ;
+  SIREN_FF(S:=SILO_EMPTY_LS, R1:=SILENCE_TMR.Q) ;
+  SIREN := SIREN_FF.Q1 ;
+  PULSE(IN:=FILL_BIN.X & NOT PULSE.Q, PT:=PULSE_TIME) ;
+  LEVEL_CTR(R := BIN_EMPTY_LS, CU := PULSE.Q, PV := BYTE_BCD_TO_INT(SETPOINT)) ;
+  BIN_LEVEL := INT_TO_BCD_BYTE(LEVEL_CTR.CV) ;
+END_ACTION
+END_PROGRAM
+
+CONFIGURATION GRAVEL_CONTROL
+  RESOURCE PROC1 ON PROC_TYPE_Y
+    TASK SCAN(INTERVAL := T#10ms, PRIORITY := 1);
+    PROGRAM G WITH SCAN : GRAVEL
+    (OFF_PB := %I0.0, ON_PB := %I0.1, FILL_PB := %I0.2, SIREN_ACK := %I0.3, LOAD_PB := %I0.4,
+     JOG_PB := %I0.5, LAMP_TEST := %I0.7, TRUCK_ON_RAMP := %I1.4, SILO_EMPTY_LS := %I1.5,
+     BIN_EMPTY_LS := %I1.6, SETPOINT := %IB2,
+     CONTROL_LAMP => %Q4.0, TRUCK_LAMP => %Q4.2, SILO_EMPTY_LAMP => %Q4.3, CONVEYOR_LAMP => %Q5.3,
+     CONVEYOR_MOTOR => %Q5.4, SILO_VALVE => %Q5.5, BIN_VALVE => %Q5.6, SIREN => %Q5.7, BIN_LEVEL => %QB6) ;
+  END_RESOURCE
+END_CONFIGURATION
+"#
+    );
+    let mut rt = build(&src);
+    let bit = |rt: &mut structure_runtime::Runtime, byte: usize, bit: u8, v: bool| {
+        let i = rt.io(0, 'I');
+        if v {
+            i[byte] |= 1 << bit;
+        } else {
+            i[byte] &= !(1 << bit);
+        }
+    };
+    let q = |rt: &mut structure_runtime::Runtime, byte: usize, bit: u8| rt.io(0, 'Q')[byte] & (1 << bit) != 0;
+    rt.io(0, 'I')[2] = 0x03;
+    bit(&mut rt, 0, 1, true); // ON
+    rt.run_for(50_000);
+    bit(&mut rt, 0, 1, false);
+    assert!(q(&mut rt, 4, 0), "control lamp");
+    bit(&mut rt, 0, 2, true); // FILL
+    rt.run_for(50_000);
+    assert!(q(&mut rt, 5, 5), "silo valve open while filling");
+    rt.run_for(300_000);
+    assert_eq!(rt.io(0, 'Q')[6], 0x03, "bin level reached the set point");
+    assert!(!q(&mut rt, 5, 5), "silo valve closed");
+    assert!(boolean(&rt, "PROC1.G.LOAD_WAIT.X"));
+    bit(&mut rt, 0, 2, false);
+    bit(&mut rt, 1, 4, true);
+    bit(&mut rt, 0, 4, true);
+    rt.run_for(50_000);
+    assert!(q(&mut rt, 5, 4), "conveyor running in RUN_IN (graphical action body)");
+    rt.run_for(250_000);
+    assert!(q(&mut rt, 5, 6), "bin valve open while dumping");
+    bit(&mut rt, 1, 6, true);
+    rt.run_for(50_000);
+    assert!(boolean(&rt, "PROC1.G.RUNOUT.X"));
+    rt.run_for(400_000);
+    assert!(boolean(&rt, "PROC1.G.START.X"));
+    // OFF: CONTROL -> CONTROL_OFF
+    bit(&mut rt, 0, 0, true);
+    rt.run_for(30_000);
+    assert!(boolean(&rt, "PROC1.G.CONTROL_OFF.X") && !q(&mut rt, 4, 0));
+    assert!(rt.errors.is_empty(), "{:?}", rt.errors);
+}
+
+fn divergence(drawing: &str) -> structure_runtime::Runtime {
+    build(&format!("PROGRAM P\nVAR e, f : BOOL; END_VAR\n{drawing}END_PROGRAM\n{CFG}\n"))
+}
+
+#[test]
+fn selection_divergence_table_46() {
+    // 2a: left-to-right priority
+    let mut rt = divergence(
+        r#"
+     +===+===+
+     || S5  ||
+     +===+===+
+         |
+   +-----*------+
+   |            |
+   + e          + f
+   |            |
++--+--+      +--+--+
+| S6  |      | S8  |
++-----+      +-----+
+"#,
+    );
+    set(&mut rt, "e", true);
+    set(&mut rt, "f", true);
+    rt.run_for(10_000);
+    assert!(boolean(&rt, "R.P1.S6.X") && !boolean(&rt, "R.P1.S8.X"));
+    // 2b: numbered branches, lowest number first
+    let mut rt = divergence(
+        r#"
+     +===+===+
+     || S5  ||
+     +===+===+
+         |
+   +-----*------+
+   |2           |1
+   + e          + f
+   |            |
++--+--+      +--+--+
+| S6  |      | S8  |
++-----+      +-----+
+"#,
+    );
+    set(&mut rt, "e", true);
+    set(&mut rt, "f", true);
+    rt.run_for(10_000);
+    assert!(!boolean(&rt, "R.P1.S6.X") && boolean(&rt, "R.P1.S8.X"));
+    // 2c: the user assures mutual exclusion; simultaneously true
+    // transitions are an error (annex E, 2.6.5)
+    let c = r#"
+     +===+===+
+     || S5  ||
+     +===+===+
+         |
+   +-----+------+
+   |            |
+   + e          + f
+   |            |
++--+--+      +--+--+
+| S6  |      | S8  |
++-----+      +-----+
+"#;
+    let mut rt = divergence(c);
+    set(&mut rt, "f", true);
+    rt.run_for(10_000);
+    assert!(boolean(&rt, "R.P1.S8.X"));
+    assert!(rt.errors.is_empty());
+    let mut rt = divergence(c);
+    set(&mut rt, "e", true);
+    set(&mut rt, "f", true);
+    rt.run_for(10_000);
+    assert!(!rt.errors.is_empty(), "simultaneously true transitions must be reported");
+}

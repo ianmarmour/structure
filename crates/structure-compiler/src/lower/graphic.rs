@@ -317,6 +317,58 @@ impl<'c, 's> Lowerer<'c, 's> {
                         }
                     }
                 }
+                // A loop through an output of a function block instance: the
+                // output keeps its value from the previous evaluation of the
+                // instance (e.g. the BLINK/BLANK timers of figure F.5).
+                if !broken {
+                    'fb: for &i in &cand {
+                        for (&(node, _), &ni) in input_net.iter() {
+                            if node != i || vals[ni].var.is_some() {
+                                continue;
+                            }
+                            let Some((bn, inst, type_name, outputs, pin)) = u.nets[ni].drivers.iter().find_map(|d| match &u.nodes[d.node].kind {
+                                NodeKind::Block { instance: Some(inst), type_name, outputs, .. } if !done[d.node] => {
+                                    Some((d.node, inst.clone(), type_name.clone(), outputs.clone(), d.pin))
+                                }
+                                _ => None,
+                            }) else {
+                                continue;
+                            };
+                            let name = match outputs.get(pin).and_then(|p| p.name.clone()) {
+                                Some(n) if n.is("ENO") => continue,
+                                Some(n) => n.key(),
+                                None => {
+                                    let k = outputs[..pin].iter().filter(|p| p.name.is_none()).count();
+                                    let Some(&fb) = self.cx.pou_by_name.get(&type_name.key()) else { continue };
+                                    let declared: Vec<String> =
+                                        self.cx.pous[fb].vars.iter().filter(|v| v.kind == VKind::Output && v.name != "ENO" && !v.implicit).map(|v| v.name.clone()).collect();
+                                    match declared.get(k) {
+                                        Some(n) => n.clone(),
+                                        None => continue,
+                                    }
+                                }
+                            };
+                            let fe = Expr {
+                                kind: ExprKind::Field { base: Box::new(Expr { kind: ExprKind::Name(inst.clone()), span: inst.span }), field: Ident::new(name, inst.span) },
+                                span: inst.span,
+                            };
+                            let v = self.expr(&fe, None);
+                            let t = v.ty;
+                            if self.cx.types.scalar(t).is_none() {
+                                continue;
+                            }
+                            let loc = self.temp_typed(t);
+                            self.assign(out, loc.clone(), t, v, inst.span);
+                            let var = self.synth_var("N", loc.clone(), t);
+                            vals[ni] = NetVal { var: Some(var), loc: Some(loc), ty: Some(t), driven: 0, valid: None, reference: None };
+                            for sk in &u.nets[ni].sinks {
+                                deps[sk.node].remove(&bn);
+                            }
+                            broken = true;
+                            break 'fb;
+                        }
+                    }
+                }
                 if !broken {
                     let span = u.nodes[cand[0]].span;
                     self.cx.annex_e("4.1.3", "feedback path without a feedback variable: a variable shall be connected to the loop so that it can be initialized", span);

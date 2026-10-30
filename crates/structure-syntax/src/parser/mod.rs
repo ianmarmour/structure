@@ -505,6 +505,7 @@ impl<'a> Parser<'a> {
                             sfc.steps.extend(textual.steps);
                             sfc.transitions.extend(textual.transitions);
                             sfc.actions.extend(textual.actions);
+                            crate::graphic::resolve_transition_names(sfc);
                         }
                         None => self.diags.push(Diagnostic::error(
                             "action and transition declarations can only accompany a sequential function chart",

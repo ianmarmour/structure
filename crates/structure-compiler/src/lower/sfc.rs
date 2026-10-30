@@ -335,8 +335,26 @@ impl<'c, 's> Lowerer<'c, 's> {
             out.push(St::Store(Ty::Bool, c.clone(), Ex::bool(false)));
         }
         let cleared: Vec<Loc> = (0..n).map(|_| self.temp(8)).collect();
+        // Selection divergences drawn without priority (table 46 2c): the
+        // user assures that their conditions are mutually exclusive; two
+        // of them clearable at once is an error (2.6.5).
+        let unprioritised: Vec<bool> = transitions.iter().map(|(t, _, _)| self.is_graphic_unprioritised(t)).collect();
+        let clearable = |i: usize| {
+            let mut e = conds[i].clone();
+            for &s in &transitions[i].1 {
+                e = Ex::and(e, Ex::Load(Ty::Bool, Loc::Ip(layout.steps[s].x as u32)));
+            }
+            e
+        };
+        for i in 0..n {
+            for j in i + 1..n {
+                if unprioritised[i] && unprioritised[j] && transitions[j].1.iter().any(|s| transitions[i].1.contains(s)) {
+                    out.push(St::If(Ex::and(clearable(i), clearable(j)), vec![St::Trap(TrapCode::SimultaneousTransitions)], vec![]));
+                }
+            }
+        }
         for &i in &order {
-            let (t, from, _) = &transitions[i];
+            let (_, from, _) = &transitions[i];
             let mut enabled = conds[i].clone();
             for &s in from {
                 enabled = Ex::and(enabled, Ex::Load(Ty::Bool, Loc::Ip(layout.steps[s].x as u32)));
@@ -345,16 +363,6 @@ impl<'c, 's> Lowerer<'c, 's> {
             let mut set = vec![St::Store(Ty::Bool, cleared[i].clone(), Ex::bool(true))];
             for &s in from {
                 set.push(St::Store(Ty::Bool, consumed[s].clone(), Ex::bool(true)));
-            }
-            // Non-prioritised simultaneous transitions (table 46 2c): error.
-            if t.branch_priority.is_none() && self.is_graphic_unprioritised(t) {
-                let mut others = Ex::bool(false);
-                for (j, (_, f2, _)) in transitions.iter().enumerate() {
-                    if j != i && f2.iter().any(|s| from.contains(s)) {
-                        others = Ex::or(others, Ex::Load(Ty::Bool, cleared[j].clone()));
-                    }
-                }
-                set.insert(0, St::If(others, vec![St::Trap(TrapCode::SimultaneousTransitions)], vec![]));
             }
             out.push(St::Store(Ty::Bool, cleared[i].clone(), Ex::bool(false)));
             out.push(St::If(enabled, set, vec![]));
