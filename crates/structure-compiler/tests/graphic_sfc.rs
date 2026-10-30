@@ -664,3 +664,182 @@ END_PROGRAM
     assert!(!x(&rt, "OUT1"), "final scan of LD_ACT with A = FALSE");
     assert!(rt.errors.is_empty(), "{:?}", rt.errors);
 }
+
+const AGV_MAIN_F12: &str = r#"
++--------------------------+
+|                          |
+|                     +====+====+
+|                     || START ||
+|                     +====+====+
+|                          |
+|       +------------------*------------+
+|       |                               |
+|       + READY.X & SINGLE_PB           + READY.X & DOUBLE_PB
+|       |                               |
+|   +---+----+ +---+-------+       +----+-----+ +---+-------+
+|   | SINGLE |-| N | CYCLE |       | DOUBLE_1 |-| N | CYCLE |
+|   +---+----+ +---+-------+       +----+-----+ +---+-------+
+|       |                               |
+|       *---------+                     + DONE.X
+|       |         |                     |
+|       |         + DONE.X & DOUBLE_PB  |
+|       |         +---------------------+
+|       |                               |
+|       + DONE.X & NOT DOUBLE_PB +------+------+
+|       |                        | DOUBLE_WAIT |
+|       |                        +------+------+
+|       |                               |
+|       |                               + READY.X
+|       |                               |
+|       |                          +----+-----+ +---+-------+
+|       |                          | DOUBLE_2 |-| N | CYCLE |
+|       |                          +----+-----+ +---+-------+
+|       |                               |
+|       |                               + DONE.X
+|       |                               |
+|       +---------------+---------------+
+|                       |
+|                 +-----+------+
+|                 | NON_REPEAT |
+|                 +-----+------+
+|                       |
+|                       +NOT(SINGLE_PB OR DOUBLE_PB)
+|                       |
++-----------------------+
+"#;
+
+const AGV_CYCLE_F12: &str = r#"
++-----------+
+|           |
+|      +====+====+
+|      || READY ||
+|      +====+====+
+|           |
+|           + CYCLE
+|           |
+|      +----+----+   +---+-----------+
+|      | FORWARD |---| N | FWD_MOTOR |
+|      +----+----+   +---+-----------+
+|           |
+|           + RIGHT_LS
+|           |
+|      +----+----+   +---+-----------+
+|      | REVERSE |---| N | REV_MOTOR |
+|      +----+----+   +---+-----------+
+|           |
+|           + LEFT_LS
+|           |
+|       +---+---+
+|       | DONE  |
+|       +---+---+
+|           |
+|           + NOT CYCLE
+|           |
++-----------+
+"#;
+
+#[test]
+fn f8_agv_graphical_program_and_configuration() {
+    // figures F.10 (graphical declaration), F.11 (graphical configuration)
+    // and F.12 (two charts)
+    let src = format!(
+        r#"
+PROGRAM
+       +----------------------+
+       |         AGV          |
+BOOL---|SINGLE_PB    FWD_MOTOR|---BOOL
+BOOL---|DOUBLE_PB    REV_MOTOR|---BOOL
+BOOL---|LEFT_LS               |
+BOOL---|RIGHT_LS              |
+       +----------------------+
+VAR CYCLE : BOOL; END_VAR
+{AGV_MAIN_F12}
+{AGV_CYCLE_F12}END_PROGRAM
+
+CONFIGURATION AGV_CONTROL
+  RESOURCE AGV_PROC ON SMALL_PC
+             AGV_1
+          +----------------------+
+          |         AGV          |
+  %IX1----|SINGLE_PB    FWD_MOTOR|---%QX1
+  %IX2----|DOUBLE_PB    REV_MOTOR|---%QX2
+  %IX3----|LEFT_LS               |
+  %IX4----|RIGHT_LS              |
+          +----------------------+
+  END_RESOURCE
+END_CONFIGURATION
+"#
+    )
+    .replace("%", "%");
+    let mut rt = build(&src);
+    let input = |rt: &mut structure_runtime::Runtime, bit: u8, v: bool| {
+        let i = rt.io(0, 'I');
+        if v {
+            i[0] |= 1 << bit;
+        } else {
+            i[0] &= !(1 << bit);
+        }
+    };
+    let fwd = |rt: &mut structure_runtime::Runtime| rt.io(0, 'Q')[0] & 0b10 != 0;
+    let rev = |rt: &mut structure_runtime::Runtime| rt.io(0, 'Q')[0] & 0b100 != 0;
+    let step = |rt: &mut structure_runtime::Runtime| rt.run_for(10_000);
+    input(&mut rt, 3, true); // at the left
+    for _ in 0..3 {
+        step(&mut rt);
+    }
+    assert!(!fwd(&mut rt) && !rev(&mut rt));
+    // one cycle
+    input(&mut rt, 1, true);
+    for _ in 0..4 {
+        step(&mut rt);
+    }
+    input(&mut rt, 1, false);
+    assert!(fwd(&mut rt), "moving right");
+    input(&mut rt, 3, false);
+    input(&mut rt, 4, true);
+    for _ in 0..3 {
+        step(&mut rt);
+    }
+    assert!(rev(&mut rt) && !fwd(&mut rt), "returning");
+    input(&mut rt, 4, false);
+    input(&mut rt, 3, true);
+    for _ in 0..8 {
+        step(&mut rt);
+    }
+    assert!(!fwd(&mut rt) && !rev(&mut rt), "a single cycle");
+    assert!(boolean(&rt, "AGV_PROC.AGV_1.START.X"));
+    // two cycles
+    input(&mut rt, 2, true);
+    for _ in 0..4 {
+        step(&mut rt);
+    }
+    input(&mut rt, 2, false);
+    let mut cycles = 0;
+    for _ in 0..3 {
+        // wait for the forward motion, then drive the limit switches
+        let mut moved = false;
+        for _ in 0..10 {
+            if fwd(&mut rt) {
+                moved = true;
+                break;
+            }
+            step(&mut rt);
+        }
+        if !moved {
+            break;
+        }
+        cycles += 1;
+        input(&mut rt, 3, false);
+        input(&mut rt, 4, true);
+        for _ in 0..3 {
+            step(&mut rt);
+        }
+        input(&mut rt, 4, false);
+        input(&mut rt, 3, true);
+        for _ in 0..4 {
+            step(&mut rt);
+        }
+    }
+    assert_eq!(cycles, 2, "a double cycle");
+    assert!(rt.errors.is_empty(), "{:?}", rt.errors);
+}
