@@ -1,6 +1,7 @@
 //! Configurations, resources and tasks (1.4.1, 2.7): starting and stopping,
 //! initialisation (2.4.2), task scheduling (2.7.2) and access to variables.
 
+use crate::driver::{parse_area, Binding, Direction, DriverConfig, DriverEvent, DriverRegistry, DriverSpec, DriverStatus, FaultPolicy, IoDriver};
 use crate::error::{RuntimeError, TrapCode};
 use crate::image::{Area, Image, Source, TypeDesc};
 use crate::memory::Memory;
@@ -69,6 +70,9 @@ struct TaskState {
     last_single: bool,
     pub activations: u64,
     pub overruns: u64,
+    /// Jobs of the task activated and not yet completed; the outputs of the
+    /// drivers are written when it drops to zero.
+    pending: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -91,6 +95,35 @@ struct ResourceState {
 /// Lowest scheduling priority, used for programs without task association.
 pub const BACKGROUND_PRIORITY: u32 = u32::MAX;
 
+/// A driver attached to a resource.
+struct DriverHost {
+    name: String,
+    driver: Box<dyn IoDriver>,
+    resource: usize,
+    task: Option<usize>,
+    bindings: Vec<Binding>,
+    /// Byte address in memory of each binding.
+    addrs: Vec<usize>,
+    /// Bit address of the BOOL status variable.
+    status: Option<u64>,
+    on_fault: FaultPolicy,
+    healthy: Option<bool>,
+    /// Result of the last exchange of each direction (open counts for both).
+    inputs_ok: bool,
+    outputs_ok: bool,
+    message: String,
+    exchanges: u64,
+    opened: bool,
+}
+
+impl Drop for DriverHost {
+    fn drop(&mut self) {
+        if self.opened {
+            self.driver.close();
+        }
+    }
+}
+
 /// An execution event, for tracing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -111,6 +144,9 @@ pub struct Runtime {
     started: bool,
     epoch: Instant,
     pub trace: Option<Vec<Event>>,
+    drivers: Vec<DriverHost>,
+    /// Changes of the status of the drivers.
+    pub driver_events: Vec<DriverEvent>,
 }
 
 impl Runtime {
@@ -124,7 +160,7 @@ impl Runtime {
             .iter()
             .map(|r| ResourceState {
                 running: false,
-                tasks: r.tasks.iter().map(|_| TaskState { next_due: None, last_single: false, activations: 0, overruns: 0 }).collect(),
+                tasks: r.tasks.iter().map(|_| TaskState { next_due: None, last_single: false, activations: 0, overruns: 0, pending: 0 }).collect(),
                 jobs: r
                     .jobs
                     .iter()
@@ -138,7 +174,20 @@ impl Runtime {
                 active: Vec::new(),
             })
             .collect();
-        Runtime { image, mem, options, now_us: 0, ns_accum: 0, resources, errors: Vec::new(), started: false, epoch: Instant::now(), trace: None }
+        Runtime {
+            image,
+            mem,
+            options,
+            now_us: 0,
+            ns_accum: 0,
+            resources,
+            errors: Vec::new(),
+            started: false,
+            epoch: Instant::now(),
+            trace: None,
+            drivers: Vec::new(),
+            driver_events: Vec::new(),
+        }
     }
 
     pub fn now(&self) -> i64 {
@@ -211,6 +260,7 @@ impl Runtime {
                 t.last_single = false;
                 t.activations = 0;
                 t.overruns = 0;
+                t.pending = 0;
             }
             for (ji, j) in rs.jobs.iter_mut().enumerate() {
                 j.stats = JobStats::default();
@@ -220,19 +270,230 @@ impl Runtime {
             }
         }
         self.started = true;
+        self.driver_events.clear();
+        for di in 0..self.drivers.len() {
+            let h = &mut self.drivers[di];
+            h.healthy = None;
+            h.exchanges = 0;
+            if h.opened {
+                h.driver.close();
+            }
+            let r = h.driver.open(&h.bindings);
+            h.opened = r.is_ok();
+            self.driver_result(di, None, r);
+        }
         Ok(())
     }
 
     /// Stops all resources (their tasks are disabled).
     pub fn stop(&mut self) {
-        for r in &mut self.resources {
-            r.running = false;
-            r.active.clear();
-            for j in &mut r.jobs {
-                j.ready = false;
-            }
+        for ri in 0..self.resources.len() {
+            self.stop_resource(ri);
         }
         self.started = false;
+    }
+
+    fn stop_resource(&mut self, ri: usize) {
+        let r = &mut self.resources[ri];
+        let was_running = r.running;
+        r.running = false;
+        r.active.clear();
+        for j in &mut r.jobs {
+            j.ready = false;
+        }
+        if was_running {
+            for h in self.drivers.iter_mut().filter(|h| h.resource == ri && h.opened) {
+                h.driver.stop();
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ drivers
+
+    /// Attaches an I/O driver to a resource, as described by `spec` (its
+    /// type and parameters are not used here). Drivers are opened when the
+    /// configuration starts.
+    pub fn add_driver(&mut self, spec: &DriverSpec, driver: Box<dyn IoDriver>) -> Result<(), String> {
+        let name = &spec.name;
+        let ri = match &spec.resource {
+            Some(r) => self.image.resources.iter().position(|x| x.name.eq_ignore_ascii_case(r)).ok_or_else(|| format!("driver {}: unknown resource '{}'", name, r))?,
+            None if self.image.resources.len() == 1 => 0,
+            None => return Err(format!("driver {}: the configuration has several resources; give the \"resource\" of the driver", name)),
+        };
+        let res = &self.image.resources[ri];
+        let task = match &spec.task {
+            Some(t) => Some(res.tasks.iter().position(|x| x.name.eq_ignore_ascii_case(t)).ok_or_else(|| format!("driver {}: resource {} has no task '{}'", name, res.name, t))?),
+            None => None,
+        };
+        let mut bindings = Vec::new();
+        let mut addrs = Vec::new();
+        for b in &spec.bindings {
+            let (direction, path) = parse_area(&b.area).map_err(|e| format!("driver {}: {}", name, e))?;
+            let loc = if direction == Direction::Input { 'I' } else { 'Q' };
+            let area = if path.is_empty() {
+                Some(if direction == Direction::Input { res.input } else { res.output })
+            } else {
+                res.io_modules.iter().find(|m| m.location == loc && m.path == path).map(|m| m.area)
+            };
+            let (base, avail) = area.map(|a| (a.base as usize, a.size as usize)).unwrap_or((0, 0));
+            if area.is_some() && b.offset > avail {
+                return Err(format!("driver {}: offset {} is beyond the area {} ({} bytes)", name, b.offset, b.area, avail));
+            }
+            let rest = avail.saturating_sub(b.offset);
+            let size = b.size.map(|s| s.min(rest)).unwrap_or(rest);
+            bindings.push(Binding { area: b.area.clone(), direction, path, offset: b.offset, size, params: b.params.clone() });
+            addrs.push(base + b.offset);
+        }
+        let status = match &spec.status {
+            Some(path) => match self.resolve(path) {
+                Ok((addr, TypeDesc::Bool)) => Some(addr),
+                Ok(_) => return Err(format!("driver {}: the status variable {} shall be of type BOOL", name, path)),
+                Err(e) => return Err(format!("driver {}: status variable: {}", name, e)),
+            },
+            None => None,
+        };
+        self.drivers.push(DriverHost {
+            name: name.clone(),
+            driver,
+            resource: ri,
+            task,
+            bindings,
+            addrs,
+            status,
+            on_fault: spec.on_fault,
+            healthy: None,
+            inputs_ok: true,
+            outputs_ok: true,
+            message: String::new(),
+            exchanges: 0,
+            opened: false,
+        });
+        Ok(())
+    }
+
+    /// Creates and attaches the drivers of a driver configuration.
+    pub fn load_drivers(&mut self, config: &DriverConfig, registry: &DriverRegistry) -> Result<(), String> {
+        for spec in &config.drivers {
+            if self.drivers.iter().any(|d| d.name.eq_ignore_ascii_case(&spec.name)) {
+                return Err(format!("duplicate driver name {}", spec.name));
+            }
+            let driver = registry.create(spec)?;
+            self.add_driver(spec, driver)?;
+        }
+        Ok(())
+    }
+
+    /// The status of the drivers.
+    pub fn drivers(&self) -> Vec<DriverStatus> {
+        self.drivers
+            .iter()
+            .map(|h| DriverStatus {
+                name: h.name.clone(),
+                resource: self.image.resources[h.resource].name.clone(),
+                healthy: h.healthy.unwrap_or(false),
+                message: h.message.clone(),
+                exchanges: h.exchanges,
+            })
+            .collect()
+    }
+
+    /// The bindings of a driver, as given to it when it was opened.
+    pub fn driver_bindings(&self, name: &str) -> Option<&[Binding]> {
+        self.drivers.iter().find(|h| h.name.eq_ignore_ascii_case(name)).map(|h| h.bindings.as_slice())
+    }
+
+    fn driver_applies(h: &DriverHost, ri: usize, task: Option<usize>) -> bool {
+        h.resource == ri && h.opened && (h.task.is_none() || h.task == task)
+    }
+
+    /// Reads the inputs of the drivers of a resource before the execution
+    /// of a task (`None`: of a program without task).
+    fn exchange_inputs(&mut self, ri: usize, task: Option<usize>) {
+        for di in 0..self.drivers.len() {
+            let h = &mut self.drivers[di];
+            if !Self::driver_applies(h, ri, task) || !h.bindings.iter().any(|b| b.direction == Direction::Input) {
+                continue;
+            }
+            let mut bufs: Vec<Vec<u8>> = h
+                .bindings
+                .iter()
+                .zip(&h.addrs)
+                .map(|(b, &a)| if b.direction == Direction::Input { self.mem.bytes[a..a + b.size].to_vec() } else { Vec::new() })
+                .collect();
+            let mut refs: Vec<&mut [u8]> = bufs.iter_mut().map(|b| b.as_mut_slice()).collect();
+            let r = h.driver.read_inputs(&mut refs);
+            if r.is_ok() {
+                for ((b, &a), buf) in h.bindings.iter().zip(&h.addrs).zip(&bufs) {
+                    if b.direction == Direction::Input {
+                        self.mem.bytes[a..a + b.size].copy_from_slice(buf);
+                    }
+                }
+            }
+            self.driver_result(di, Some(Direction::Input), r);
+        }
+    }
+
+    /// Writes the outputs of the drivers of a resource after the execution
+    /// of a task.
+    fn exchange_outputs(&mut self, ri: usize, task: Option<usize>) {
+        for di in 0..self.drivers.len() {
+            let h = &mut self.drivers[di];
+            if !Self::driver_applies(h, ri, task) || !h.bindings.iter().any(|b| b.direction == Direction::Output) {
+                continue;
+            }
+            let data: Vec<&[u8]> =
+                h.bindings.iter().zip(&h.addrs).map(|(b, &a)| if b.direction == Direction::Output { &self.mem.bytes[a..a + b.size] } else { &[][..] }).collect();
+            let r = h.driver.write_outputs(&data);
+            self.driver_result(di, Some(Direction::Output), r);
+        }
+    }
+
+    /// Records the result of opening a driver (`exchange` = None) or of an
+    /// exchange. A driver is healthy while the last exchange of each
+    /// direction succeeded.
+    fn driver_result(&mut self, di: usize, exchange: Option<Direction>, r: Result<(), String>) {
+        let now = self.now_us;
+        let h = &mut self.drivers[di];
+        let success = r.is_ok();
+        match exchange {
+            None => {
+                h.inputs_ok = success;
+                h.outputs_ok = success;
+            }
+            Some(Direction::Input) => h.inputs_ok = success,
+            Some(Direction::Output) => h.outputs_ok = success,
+        }
+        if success && exchange.is_some() {
+            h.exchanges += 1;
+        }
+        let ok = h.inputs_ok && h.outputs_ok;
+        let message = match r {
+            Err(e) => e,
+            Ok(()) if ok => String::new(),
+            Ok(()) => h.message.clone(),
+        };
+        let changed = h.healthy != Some(ok) || (!ok && message != h.message);
+        h.healthy = Some(ok);
+        h.message = message.clone();
+        if let Some(addr) = h.status {
+            let _ = self.mem.store(crate::ty::Ty::Bool, addr, ok as u64);
+        }
+        if !changed {
+            return;
+        }
+        let (name, ri, policy) = (h.name.clone(), h.resource, h.on_fault);
+        self.driver_events.push(DriverEvent { time: now, driver: name.clone(), healthy: ok, message: message.clone() });
+        if !ok && policy == FaultPolicy::Stop && self.resources[ri].running {
+            self.errors.push(RuntimeError {
+                code: TrapCode::DriverFault,
+                resource: self.image.resources[ri].name.clone(),
+                job: format!("driver {}: {}", name, message),
+                routine: String::new(),
+                location: None,
+                time: now,
+            });
+            self.stop_resource(ri);
+        }
     }
 
     pub fn resource_running(&self, i: usize) -> bool {
@@ -334,6 +595,7 @@ impl Runtime {
 
     fn activate_task(&mut self, ri: usize, ti: usize) {
         let now = self.now_us;
+        let mut readied = 0;
         self.resources[ri].tasks[ti].activations += 1;
         for ji in 0..self.image.resources[ri].jobs.len() {
             if self.image.resources[ri].jobs[ji].task != Some(ti) {
@@ -360,6 +622,15 @@ impl Runtime {
             let js = &mut self.resources[ri].jobs[ji];
             js.ready = true;
             js.ready_since = now;
+            readied += 1;
+        }
+        if readied > 0 {
+            // the inputs are read before the programs of the task execute
+            let first = self.resources[ri].tasks[ti].pending == 0;
+            self.resources[ri].tasks[ti].pending += readied;
+            if first {
+                self.exchange_inputs(ri, Some(ti));
+            }
         }
     }
 
@@ -400,6 +671,9 @@ impl Runtime {
             }
         };
         if let Some(ji) = start {
+            if self.image.resources[ri].jobs[ji].task.is_none() {
+                self.exchange_inputs(ri, None);
+            }
             let info = &self.image.resources[ri].jobs[ji];
             let mut ctx = Context::new(&self.image, info.routine, info.instance, info.stack, self.now_us);
             if !self.resources[ri].active.is_empty() {
@@ -524,7 +798,8 @@ impl Runtime {
                 if let Some(t) = &mut self.trace {
                     t.push(Event::End { time: self.now_us, resource: ri, job: ji });
                 }
-                if self.image.resources[ri].jobs[ji].task.is_none() {
+                self.job_completed(ri, ji);
+                if self.image.resources[ri].jobs[ji].task.is_none() && self.resources[ri].running {
                     // Re-scheduled as soon as its execution terminates (2.7.2 rule 4).
                     let js = &mut self.resources[ri].jobs[ji];
                     js.ready = true;
@@ -544,15 +819,9 @@ impl Runtime {
                 let err = self.make_error(code, pc, &name, &job);
                 self.errors.push(err);
                 match self.options.on_error {
-                    ErrorPolicy::StopResource => {
-                        let rs = &mut self.resources[ri];
-                        rs.running = false;
-                        rs.active.clear();
-                        for j in &mut rs.jobs {
-                            j.ready = false;
-                        }
-                    }
+                    ErrorPolicy::StopResource => self.stop_resource(ri),
                     ErrorPolicy::AbortExecution => {
+                        self.job_completed(ri, ji);
                         if self.image.resources[ri].jobs[ji].task.is_none() {
                             let js = &mut self.resources[ri].jobs[ji];
                             js.ready = true;
@@ -563,6 +832,21 @@ impl Runtime {
             }
         }
         steps
+    }
+
+    /// A job has completed (or was abandoned): the outputs of the drivers are
+    /// written once all the jobs of its task activation have completed.
+    fn job_completed(&mut self, ri: usize, ji: usize) {
+        match self.image.resources[ri].jobs[ji].task {
+            Some(ti) => {
+                let ts = &mut self.resources[ri].tasks[ti];
+                ts.pending = ts.pending.saturating_sub(1);
+                if ts.pending == 0 {
+                    self.exchange_outputs(ri, Some(ti));
+                }
+            }
+            None => self.exchange_outputs(ri, None),
+        }
     }
 
     /// Executes each ready job once, in priority order, without regard to
@@ -578,6 +862,16 @@ impl Runtime {
             for ji in order {
                 self.resources[ri].jobs[ji].ready = true;
                 self.resources[ri].jobs[ji].ready_since = self.now_us;
+                match self.image.resources[ri].jobs[ji].task {
+                    Some(ti) => {
+                        let first = self.resources[ri].tasks[ti].pending == 0;
+                        self.resources[ri].tasks[ti].pending += 1;
+                        if first {
+                            self.exchange_inputs(ri, Some(ti));
+                        }
+                    }
+                    None => self.exchange_inputs(ri, None),
+                }
                 // run this job to completion
                 let info = &self.image.resources[ri].jobs[ji];
                 let ctx = Context::new(&self.image, info.routine, info.instance, info.stack, self.now_us);

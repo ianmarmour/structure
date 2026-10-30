@@ -49,6 +49,8 @@ pub enum TrapCode {
     InvalidOperation,
     /// 2.4.3: attempt to modify a constant (via an access path).
     ConstantModification,
+    /// An I/O driver failed to exchange the process image.
+    DriverFault,
 }
 
 impl TrapCode {
@@ -76,6 +78,7 @@ impl TrapCode {
             TrapCode::MemoryFault => "-",
             TrapCode::InvalidOperation => "-",
             TrapCode::ConstantModification => "2.4.3",
+            TrapCode::DriverFault => "2.4.1.1",
         }
     }
 
@@ -102,6 +105,7 @@ impl TrapCode {
             TrapCode::MemoryFault => "memory access out of bounds",
             TrapCode::InvalidOperation => "invalid operation",
             TrapCode::ConstantModification => "attempt to modify a variable declared CONSTANT",
+            TrapCode::DriverFault => "I/O driver fault",
         }
     }
 }
