@@ -153,3 +153,28 @@ END_CONFIGURATION
     assert!(e.contains("PT has no element named Z"), "{}", e);
     assert!(e.contains("P has no variable named W"), "{}", e);
 }
+
+#[test]
+fn recursion_reported_without_configuration() {
+    let src = "FUNCTION F1 : INT VAR_INPUT X : INT; END_VAR F1 := F2(X); END_FUNCTION\nFUNCTION F2 : INT VAR_INPUT X : INT; END_VAR F2 := F1(X); END_FUNCTION\n";
+    let (sm, out) = structure_compiler::compile_str("rec.st", src, structure_compiler::Mode::Check);
+    let text = out.diagnostics.render(&sm);
+    assert!(text.contains("F1 is invoked recursively (F1 -> F2 -> F1)"), "{}", text);
+    assert!(text.contains("rec.st:1:10"), "{}", text);
+}
+
+#[test]
+fn malformed_recursive_declarations_do_not_crash() {
+    // found by fuzzing: instance types that contain themselves
+    let e = errors(
+        r#"
+TYPE PT : STRUCT X : INT; Y : P; END_STRUCT; END_TYPE
+PROGRAM P VAR V : PT; END_VAR V.X := 1; END_PROGRAM
+FUNCTION_BLOCK COUNTER
+VAR_OUTPUT N : DINT; FB1 : COUNTER; END_VAR
+END_FUNCTION_BLOCK
+"#,
+    );
+    assert!(e.contains("structure elements cannot be function block instances"), "{}", e);
+    assert!(e.contains("COUNTER is instantiated recursively"), "{}", e);
+}

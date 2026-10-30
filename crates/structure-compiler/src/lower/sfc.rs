@@ -123,8 +123,16 @@ impl<'c, 's> Lowerer<'c, 's> {
     fn sfc_chart(&mut self, out: &mut Vec<St>, sfc: &Sfc, graphic: bool, enclosing: Option<Ex>) {
         let scope = self.sfc_scope.clone().expect("SFC scope");
         let full = self.cx.pous[self.pou].sfc.clone().unwrap();
+        let mut steps: Vec<crate::ctx::SfcStepLayout> = Vec::new();
+        for s in &sfc.steps {
+            if let Some(f) = full.steps.iter().find(|f| f.name == s.name.key()) {
+                if !steps.iter().any(|x| x.name == f.name) {
+                    steps.push(f.clone());
+                }
+            }
+        }
         let layout = crate::ctx::SfcLayout {
-            steps: full.steps.iter().filter(|s| scope.step_chart.get(&s.name) == Some(&sfc.span)).cloned().collect(),
+            steps,
             actions: full.actions.iter().filter(|a| scope.action_chart.get(&a.name).map_or(enclosing.is_none(), |c| *c == sfc.span)).cloned().collect(),
         };
         let saved_2c = self.graphic_2c;

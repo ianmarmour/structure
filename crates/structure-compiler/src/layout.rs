@@ -23,6 +23,7 @@ impl<'s> Ctx<'s> {
         if stack.contains(&i) {
             let span = self.pous[i].span;
             self.error_clause("2.5", format!("{} is instantiated recursively; program organization units shall not be recursive", self.pous[i].name), span);
+            self.recursive_instances = true;
             return;
         }
         stack.push(i);

@@ -206,6 +206,9 @@ enum TypeState {
 
 pub struct Ctx<'s> {
     pub sources: &'s SourceMap,
+    /// A POU instantiates itself (reported by the layout); lowering is
+    /// skipped since instance types are then infinite.
+    pub recursive_instances: bool,
     pub types: Types,
     pub pous: Vec<PouInfo>,
     pub pou_by_name: HashMap<String, usize>,
@@ -225,6 +228,7 @@ pub struct Ctx<'s> {
 impl<'s> Ctx<'s> {
     pub fn new(sources: &'s SourceMap, options: CompileOptions) -> Ctx<'s> {
         Ctx {
+            recursive_instances: false,
             sources,
             types: Types::new(),
             pous: Vec::new(),
@@ -472,9 +476,14 @@ impl<'s> Ctx<'s> {
             if matches!(f.spec, TypeSpec::Struct { .. }) {
                 self.extension("nested anonymous structure declarations are an extension", f.spec.span());
             }
-            let ty = self.resolve_spec(&f.spec, true);
-            if self.types.instance_pou(ty).is_some() {
+            let mut ty = self.resolve_spec(&f.spec, true);
+            let mut base = self.types.resolve(ty);
+            while let TypeKind::Array { elem, .. } = self.types.kind(base) {
+                base = self.types.resolve(*elem);
+            }
+            if self.types.instance_pou(base).is_some() {
                 self.error_clause("2.3.3.1", "structure elements cannot be function block instances", f.span);
+                ty = self.types.error;
             }
             let init = f.init.as_ref().and_then(|i| self.initializer(i, ty));
             off = round8(off);

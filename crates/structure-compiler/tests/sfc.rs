@@ -298,3 +298,22 @@ END_PROGRAM
     assert!(e.contains("the step S1 belongs to another chart"), "{}", e);
     assert!(e.contains("the step N1 can never become active"), "{}", e);
 }
+
+#[test]
+fn duplicate_step_in_included_chart() {
+    // found by fuzzing
+    let src = format!(r#"
+PROGRAM P
+VAR GO : BOOL; END_VAR
+INITIAL_STEP READY : END_STEP
+TRANSITION FROM READY TO OPENING := GO; END_TRANSITION
+STEP OPENING : OPEN_VALVE(N); END_STEP
+TRANSITION FROM OPENING TO READY := NOT GO; END_TRANSITION
+ACTION OPEN_VALVE:
+  INITIAL_STEP READY : END_STEP
+END_ACTION
+END_PROGRAM
+{CFG}
+"#);
+    assert!(errors(&src).contains("duplicate step name READY"));
+}

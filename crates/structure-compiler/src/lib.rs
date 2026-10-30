@@ -64,8 +64,11 @@ pub fn compile(sources: &SourceMap, files: &[FileId], options: CompileOptions, m
     }
     cx.resolve_all_types();
     cx.layout_all();
-    cx.check_declarations();
-    cx.lower_all();
+    if !cx.recursive_instances {
+        cx.check_declarations();
+        cx.lower_all();
+        check_recursion(&mut cx);
+    }
     let mut image = None;
     if mode == Mode::Build && !diags.has_errors() && !cx.diags.has_errors() {
         image = link::link(&mut cx);
@@ -84,6 +87,55 @@ pub fn compile(sources: &SourceMap, files: &[FileId], options: CompileOptions, m
         image = None;
     }
     Output { image, diagnostics: diags }
+}
+
+/// Reports recursive invocations (2.5): cycles in the call graph of the
+/// lowered routines.
+fn check_recursion(cx: &mut ctx::Ctx) {
+    let n = cx.routines.len();
+    let frames: Vec<u64> = cx.routines.iter().map(|r| r.frame_bytes).collect();
+    let frame_of = |r: usize| frames.get(r).copied().unwrap_or(0);
+    let calls: Vec<Vec<usize>> = cx
+        .routines
+        .iter()
+        .map(|r| codegen::generate(&r.body, &frame_of).calls.iter().map(|c| c.routine).filter(|&c| c < n).collect())
+        .collect();
+    let pou_of = |cx: &ctx::Ctx, r: usize| cx.pous.iter().position(|p| p.routine == Some(r));
+    let mut state = vec![0u8; n];
+    let mut reported = std::collections::HashSet::new();
+    for root in 0..n {
+        if state[root] != 0 {
+            continue;
+        }
+        state[root] = 1;
+        let mut stack = vec![(root, 0usize)];
+        while let Some(top) = stack.last_mut() {
+            let r = top.0;
+            if top.1 == calls[r].len() {
+                state[r] = 2;
+                stack.pop();
+                continue;
+            }
+            let c = calls[r][top.1];
+            top.1 += 1;
+            match state[c] {
+                0 => {
+                    state[c] = 1;
+                    stack.push((c, 0));
+                }
+                1 if reported.insert(c) => {
+                    // c is on the stack: report the cycle at its declaration
+                    let from = stack.iter().position(|(x, _)| *x == c).unwrap_or(0);
+                    let names: Vec<String> = stack[from..].iter().chain(std::iter::once(&(c, 0))).map(|(x, _)| cx.routines[*x].name.clone()).collect();
+                    if let Some(p) = pou_of(cx, c) {
+                        let (name, span) = (cx.pous[p].name.clone(), cx.pous[p].ast.name.span);
+                        cx.error_clause("2.5", format!("{} is invoked recursively ({}); program organization units shall not be recursive", name, names.join(" -> ")), span);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 /// Convenience: compiles source text held in memory.
