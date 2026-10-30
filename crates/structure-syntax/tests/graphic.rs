@@ -1366,3 +1366,44 @@ IN2--------|   |     |T#30ms |      |
     assert_eq!(p.text(time.as_ref().unwrap()), "T#30ms");
     assert!(indicator.is_none());
 }
+
+#[test]
+fn in_out_parameters_drawn_through_blocks_figures_11_12() {
+    let p = parse_src(&pou(
+        "PROGRAM",
+        "VAR E_TMR2 : TON; GO, DONE2 : BOOL; X3, X4 : INT; I_BLK2 : INSIDE_B; END_VAR",
+        r#"
+                    I_BLK2
+              +---------------+
+              |   INSIDE_B    |
+   E_TMR2-----|I_TMR-----I_TMR|
+       GO-----|TMR_GO  EXPIRED|---DONE2
+              +---------------+
+
+              +---------------+
+              |   INSIDE_B    |
+   E_TMR2-----|I_TMR----I_TMR |
+              +---------------+
+
+          +-----+
+          | INC |
+   X3-----|A---A|---X4
+          +-----+
+"#,
+    ))
+    .ok();
+    let n = &p.graphic().networks;
+    assert_eq!(n.len(), 3);
+    let (i, o) = pins(block(&n[0], "INSIDE_B"));
+    assert_eq!(i, vec![(Some("I_TMR".into()), false, None), (Some("TMR_GO".into()), false, None)]);
+    assert_eq!(o, vec![(Some("I_TMR".into()), false, None), (Some("EXPIRED".into()), false, None)]);
+    assert_nets!(p, &n[0], ["Src(E_TMR2) -> I_BLK2:INSIDE_B.I_TMR", "Src(GO) -> I_BLK2:INSIDE_B.TMR_GO", "I_BLK2:INSIDE_B.EXPIRED -> Var(DONE2)"]);
+    let (i, o) = pins(block(&n[1], "INSIDE_B"));
+    assert_eq!(i, vec![(Some("I_TMR".into()), false, None)]);
+    assert_eq!(o, vec![(Some("I_TMR".into()), false, None)]);
+    assert_nets!(p, &n[1], ["Src(E_TMR2) -> INSIDE_B.I_TMR"]);
+    let (i, o) = pins(block(&n[2], "INC"));
+    assert_eq!(i, vec![(Some("A".into()), false, None)]);
+    assert_eq!(o, vec![(Some("A".into()), false, None)]);
+    assert_nets!(p, &n[2], ["Src(X3) -> INC.A", "INC.A -> Var(X4)"]);
+}
