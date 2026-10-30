@@ -545,3 +545,424 @@ b-----+
         ["Src(a) -> &.in0, >=1.in0", "Src(b) -> &.in1", "Src(b) -> >=1.in1", "&.out0 -> Var(c)", ">=1.out0 -> Var(d)"]
     );
 }
+
+// ---------------------------------------------------------------- annex F
+
+const WEIGH_DECL: &str = "VAR_INPUT\n  weigh_command : BOOL;\n  gross_weight : WORD;\n  tare_weight : INT;\nEND_VAR";
+
+fn weigh_expected() -> Vec<&'static str> {
+    vec![
+        "NO(weigh_command) -> BCD_TO_INT.EN",
+        "BCD_TO_INT.ENO -> SUB.EN",
+        "SUB.ENO -> INT_TO_BCD.EN",
+        "Src(gross_weight) -> BCD_TO_INT.in1",
+        "BCD_TO_INT.out1 -> SUB.in1",
+        "Src(tare_weight) -> SUB.in2",
+        "SUB.out1 -> INT_TO_BCD.in1",
+        "INT_TO_BCD.out1 -> Var(WEIGH)",
+    ]
+}
+
+#[test]
+fn f1_weigh_ld() {
+    let src = format!(
+        "FUNCTION WEIGH : WORD\n{}\n{}END_FUNCTION\n",
+        WEIGH_DECL,
+        r#"
+|                 +--------+      +-------+      +--------+             |
+|                 |  BCD_  |      |  SUB  |      |  INT_  |             |
+| weigh_command   | TO_INT |      |       |      | TO_BCD |    ENO      |
++------| |--------|EN   ENO|------|EN  ENO|------|EN   ENO|----( )------+
+|                 |        |      |       |      |        |             |
+| gross_weight----|        |------|       |------|        |---WEIGH     |
+|                 +--------+      |       |      +--------+             |
+| tare_weight---------------------|       |                             |
+|                                 +-------+                             |
+"#
+    );
+    let p = parse_src(&src).ok();
+    let g = p.graphic();
+    assert_eq!(g.language, GraphicLanguage::Ld);
+    assert_eq!(g.networks.len(), 1);
+    let mut exp = weigh_expected();
+    exp.extend(["LeftRail -> NO(weigh_command)", "INT_TO_BCD.ENO -> Coil(ENO)", "Coil(ENO) -> RightRail"]);
+    let nets = p.nets(&g.networks[0]);
+    let mut exp: Vec<String> = exp.iter().map(|s| s.to_string()).collect();
+    exp.sort();
+    assert_eq!(nets, exp);
+    // block pins: EN/ENO are ordinary named pins, the others are unnamed
+    let sub = g.networks[0].nodes.iter().find(|n| matches!(&n.kind, NodeKind::Block { type_name, .. } if type_name.text == "SUB")).unwrap();
+    let NodeKind::Block { inputs, outputs, instance, .. } = &sub.kind else { panic!() };
+    assert!(instance.is_none());
+    assert_eq!(inputs.len(), 3);
+    assert_eq!(inputs[0].name.as_ref().unwrap().text, "EN");
+    assert!(inputs[1].name.is_none() && inputs[2].name.is_none());
+    assert_eq!(outputs.len(), 2);
+    assert_eq!(outputs[0].name.as_ref().unwrap().text, "ENO");
+}
+
+#[test]
+fn f1_weigh_fbd() {
+    let src = format!(
+        "FUNCTION WEIGH : WORD\n{}\n{}END_FUNCTION\n",
+        WEIGH_DECL,
+        r#"
+                  +--------+      +-------+      +--------+
+                  |  BCD_  |      |  SUB  |      |  INT_  |
+                  | TO_INT |      |       |      | TO_BCD |
+weigh_command-----|EN   ENO|------|EN  ENO|------|EN   ENO|---ENO
+gross_weight------|        |------|       |------|        |---WEIGH
+                  +--------+      |       |      +--------+
+tare_weight-----------------------|       |
+                                  +-------+
+"#
+    );
+    let p = parse_src(&src).ok();
+    let g = p.graphic();
+    assert_eq!(g.language, GraphicLanguage::Fbd);
+    assert_eq!(g.networks.len(), 1);
+    let mut exp = weigh_expected();
+    exp[0] = "Src(weigh_command) -> BCD_TO_INT.EN";
+    exp.push("INT_TO_BCD.ENO -> Var(ENO)");
+    let mut exp: Vec<String> = exp.iter().map(|s| s.to_string()).collect();
+    exp.sort();
+    assert_eq!(p.nets(&g.networks[0]), exp);
+}
+
+const CMD_MONITOR_DECL: &str = "VAR_INPUT AUTO_CMD, AUTO_MODE, MAN_CMD, MAN_CMD_CHK : BOOL; T_CMD_MAX : TIME; FDBK, ACK : BOOL; END_VAR
+VAR_OUTPUT CMD, ALRM : BOOL; END_VAR
+VAR CMD_TMR : TON; ALRM_FF : SR; END_VAR";
+
+#[test]
+fn f2_cmd_monitor_ld() {
+    let src = format!(
+        "FUNCTION_BLOCK CMD_MONITOR\n{}\n{}END_FUNCTION_BLOCK\n",
+        CMD_MONITOR_DECL,
+        r#"
+|                                                |
+| AUTO_MODE  AUTO_CMD                     CMD    |
++---| |--------| |-----------------+-----( )-----+
+|                                  |             |
+| AUTO_MODE  MAN_CMD   MAN_CMD_CHK |             |
++---|/|--------| |--------|/|------+             |
+|                                                |
+| ACK                                   ALRM     |
++---| |--------------------------------(R)-------+
+|                                                |
+|            CMD_TMR                             |
+|            +-----+                             |
+| CMD        | TON |       FDBK        ALRM      |
++---| |------|IN  Q|-------|/|---------(S)-------+
+|            |     |                             |
+| T_CMD_MAX--|PT ET|                             |
+|            +-----+                             |
+|                                                |
+"#
+    );
+    let p = parse_src(&src).ok();
+    let g = p.graphic();
+    assert_eq!(g.language, GraphicLanguage::Ld);
+    assert_eq!(g.networks.len(), 3);
+    assert_nets!(
+        p,
+        &g.networks[0],
+        [
+            "LeftRail -> NO(AUTO_MODE)",
+            "LeftRail -> NC(AUTO_MODE)",
+            "NO(AUTO_MODE) -> NO(AUTO_CMD)",
+            "NC(AUTO_MODE) -> NO(MAN_CMD)",
+            "NO(MAN_CMD) -> NC(MAN_CMD_CHK)",
+            "NC(MAN_CMD_CHK) + NO(AUTO_CMD) -> Coil(CMD)",
+            "Coil(CMD) -> RightRail"
+        ]
+    );
+    assert_nets!(p, &g.networks[1], ["LeftRail -> NO(ACK)", "NO(ACK) -> RCoil(ALRM)", "RCoil(ALRM) -> RightRail"]);
+    assert_nets!(
+        p,
+        &g.networks[2],
+        [
+            "LeftRail -> NO(CMD)",
+            "NO(CMD) -> CMD_TMR:TON.IN",
+            "Src(T_CMD_MAX) -> CMD_TMR:TON.PT",
+            "CMD_TMR:TON.Q -> NC(FDBK)",
+            "NC(FDBK) -> SCoil(ALRM)",
+            "SCoil(ALRM) -> RightRail"
+        ]
+    );
+    // unconnected ET is still listed
+    let tmr = g.networks[2].nodes.iter().find(|n| matches!(n.kind, NodeKind::Block { .. })).unwrap();
+    let NodeKind::Block { outputs, .. } = &tmr.kind else { panic!() };
+    assert_eq!(outputs.iter().map(|o| o.name.as_ref().unwrap().text.clone()).collect::<Vec<_>>(), ["Q", "ET"]);
+}
+
+#[test]
+fn f2_cmd_monitor_fbd() {
+    let src = format!(
+        "FUNCTION_BLOCK CMD_MONITOR\n{}\n{}END_FUNCTION_BLOCK\n",
+        CMD_MONITOR_DECL,
+        r#"
+                 +-+     +---+
+AUTO_CMD---------|&|-----|>=1|--+--------------------------------CMD
+AUTO_MODE---+----| |  +--|   |  |
+            |    +-+  |  +---+  |
+            |         |         |   CMD_TMR              ALRM_FF
+            |    +-+  |         |   +-----+              +-----+
+            +---O|&|  |         |   | TON |       +-+    | SR  |
+MAN_CMD----------| |--+         +---|IN  Q|-------|&|----|S1 Q1|---ALRM
+MAN_CMD_CHK-----O| |                |     |   +--O| | +--|R    |
+                 +-+                |     |   |   +-+ |  +-----+
+T_CMD_MAX---------------------------|PT ET|   |       |
+                                    +-----+   |       |
+FDBK------------------------------------------+       |
+ACK---------------------------------------------------+
+"#
+    );
+    let p = parse_src(&src).ok();
+    let g = p.graphic();
+    assert_eq!(g.language, GraphicLanguage::Fbd);
+    assert_eq!(g.networks.len(), 1);
+    assert_nets!(
+        p,
+        &g.networks[0],
+        [
+            "Src(AUTO_CMD) -> &.in0",
+            "Src(AUTO_MODE) -> &.!in0, &.in1",
+            "&.out0 -> >=1.in0",
+            "&.out0 -> >=1.in1",
+            "Src(MAN_CMD) -> &.in1",
+            "Src(MAN_CMD_CHK) -> &.!in2",
+            ">=1.out0 -> CMD_TMR:TON.IN, Var(CMD)",
+            "Src(T_CMD_MAX) -> CMD_TMR:TON.PT",
+            "CMD_TMR:TON.Q -> &.in0",
+            "Src(FDBK) -> &.!in1",
+            "&.out0 -> ALRM_FF:SR.S1",
+            "Src(ACK) -> ALRM_FF:SR.R",
+            "ALRM_FF:SR.Q1 -> Var(ALRM)"
+        ]
+    );
+}
+
+const STACK_INT_DECL: &str = "VAR_INPUT PUSH, POP : BOOL; R1 : BOOL; IN : INT; N : INT; END_VAR
+VAR_OUTPUT EMPTY : BOOL := 1; OFLO : BOOL := 0; OUT : INT := 0; END_VAR
+VAR STK : ARRAY[0..127] OF INT; NI : INT := 128; PTR : INT := -1; END_VAR";
+
+#[test]
+fn f4_stack_int_ld() {
+    let src = format!(
+        "FUNCTION_BLOCK STACK_INT\n{}\n{}END_FUNCTION_BLOCK\n",
+        STACK_INT_DECL,
+        r#"
+|                                                                    |
+|    R1                                                              |
++---| |--->>RESET                                                    |
+|                                                                    |
+|  POP   EMPTY                                                       |
++--| |----|/|--->>POP_STK                                            |
+|                                                                    |
+|  PUSH   OFLO                                                       |
++--| |----|/|--->>PUSH_STK                                           |
+|                                                                    |
++---------<RETURN>                                                   |
+|                                                                    |
+
+RESET:
+|      +--------+           +--------+           +-------+            |
+|      |  MOVE  |           |  MOVE  |           | LIMIT |     OFLO   |
++------|EN   ENO|-----------|EN   ENO|-----------|EN  ENO|--+--(R)----+
+|  0---|        |---OUT -1--|        |---PTR 128-|MX     |  |  EMPTY  |
+|      +--------+           +--------+        N--|IN     |  +--(S)----+
+|                                             1--|MN     |---NI       |
+|                                                +-------+            |
++---------<RETURN>                                                    |
+|                                                                     |
+
+POP_STK:
+|            +--------+       +--------+          |
+|            |  SUB   |       |   LT   |          |
++------------|EN   ENO|-------|EN   ENO|   EMPTY  |
+|      PTR---|        |--PTR--|        |----(S)---+
+|        1---|        |    0--|        |          |
+|            +--------+       +--------+          |
+|                                                 |
+|                  +-------+                      |
+|                  |  SEL  |              OFLO    |
++------------------|EN  ENO|--------------(R)-----+
+|  EMPTY           |       |                      |
++---| |------------|G      |---OUT                |
+|      STK[PTR]----|IN0    |                      |
+|             0----|IN1    |                      |
+|                  +-------+                      |
++--------------------------------<RETURN>         |
+|                                                 |
+
+PUSH_STK:
+|                                                 |
+|            +--------+       +--------+          |
+|            |  ADD   |       |   EQ   |          |
++------------|EN   ENO|-------|EN   ENO|   OFLO   |
+|      PTR---|        |--PTR--|        |----(S)---+
+|        1---|        |   NI--|        |          |
+|            +--------+       +--------+          |
+|                                                 |
+|             +------+                            |
+|  OFLO       | MOVE |                            |
++---|/|-------|EN ENO|----------------------------+
+|       IN----|      |---STK[PTR]                 |
+|             +------+                            |
+|                                                 |
+|             +-------+                           |
+|             |  SEL  |                  EMPTY    |
++-------------|EN  ENO|------------------(R)------+
+|  OFLO       |       |                           |
++---| |-------|G      |---OUT                     |
+|        IN---|IN0    |                           |
+|         0---|IN1    |                           |
+|             +-------+                           |
+"#
+    );
+    let p = parse_src(&src).ok();
+    let g = p.graphic();
+    assert_eq!(g.language, GraphicLanguage::Ld);
+    let n = &g.networks;
+    let summary: Vec<_> = n.iter().map(|x| (x.label.as_ref().map(|l| l.text.clone()), p.nodes(x))).collect();
+    assert_eq!(n.len(), 12, "{:#?}", summary);
+    assert_nets!(p, &n[0], ["LeftRail -> NO(R1)", "NO(R1) -> Jump(RESET)"]);
+    assert_nets!(p, &n[1], ["LeftRail -> NO(POP)", "NO(POP) -> NC(EMPTY)", "NC(EMPTY) -> Jump(POP_STK)"]);
+    assert_nets!(p, &n[2], ["LeftRail -> NO(PUSH)", "NO(PUSH) -> NC(OFLO)", "NC(OFLO) -> Jump(PUSH_STK)"]);
+    assert_nets!(p, &n[3], ["LeftRail -> Return"]);
+    assert_eq!(n[4].label.as_ref().unwrap().text, "RESET");
+    assert_nets!(
+        p,
+        &n[4],
+        [
+            "LeftRail -> MOVE.EN",
+            "Src(0) -> MOVE.in1",
+            "MOVE.out1 -> Var(OUT)",
+            "MOVE.ENO -> MOVE.EN",
+            "Src(-1) -> MOVE.in1",
+            "MOVE.out1 -> Var(PTR)",
+            "MOVE.ENO -> LIMIT.EN",
+            "Src(128) -> LIMIT.MX",
+            "Src(N) -> LIMIT.IN",
+            "Src(1) -> LIMIT.MN",
+            "LIMIT.out1 -> Var(NI)",
+            "LIMIT.ENO -> RCoil(OFLO), SCoil(EMPTY)",
+            "RCoil(OFLO) -> RightRail",
+            "SCoil(EMPTY) -> RightRail"
+        ]
+    );
+    assert_nets!(p, &n[5], ["LeftRail -> Return"]);
+    assert_eq!(n[6].label.as_ref().unwrap().text, "POP_STK");
+    assert_nets!(
+        p,
+        &n[6],
+        [
+            "LeftRail -> SUB.EN",
+            "Src(PTR) -> SUB.in1",
+            "Src(1) -> SUB.in2",
+            "SUB.ENO -> LT.EN",
+            "SUB.out1 -> Var(PTR)",
+            "Var(PTR) -> LT.in1",
+            "Src(0) -> LT.in2",
+            "LT.out1 -> SCoil(EMPTY)",
+            "SCoil(EMPTY) -> RightRail"
+        ]
+    );
+    assert_nets!(
+        p,
+        &n[7],
+        [
+            "LeftRail -> SEL.EN",
+            "LeftRail -> NO(EMPTY)",
+            "NO(EMPTY) -> SEL.G",
+            "Src(STK[PTR]) -> SEL.IN0",
+            "Src(0) -> SEL.IN1",
+            "SEL.out1 -> Var(OUT)",
+            "SEL.ENO -> RCoil(OFLO)",
+            "RCoil(OFLO) -> RightRail"
+        ]
+    );
+    assert_nets!(p, &n[8], ["LeftRail -> Return"]);
+    assert_eq!(n[9].label.as_ref().unwrap().text, "PUSH_STK");
+    assert_nets!(
+        p,
+        &n[9],
+        [
+            "LeftRail -> ADD.EN",
+            "Src(PTR) -> ADD.in1",
+            "Src(1) -> ADD.in2",
+            "ADD.ENO -> EQ.EN",
+            "ADD.out1 -> Var(PTR)",
+            "Var(PTR) -> EQ.in1",
+            "Src(NI) -> EQ.in2",
+            "EQ.out1 -> SCoil(OFLO)",
+            "SCoil(OFLO) -> RightRail"
+        ]
+    );
+    assert_nets!(p, &n[10], ["LeftRail -> NC(OFLO)", "NC(OFLO) -> MOVE.EN", "Src(IN) -> MOVE.in1", "MOVE.out1 -> Var(STK[PTR])", "MOVE.ENO -> RightRail"]);
+    assert_nets!(
+        p,
+        &n[11],
+        [
+            "LeftRail -> SEL.EN",
+            "LeftRail -> NO(OFLO)",
+            "NO(OFLO) -> SEL.G",
+            "Src(IN) -> SEL.IN0",
+            "Src(0) -> SEL.IN1",
+            "SEL.out1 -> Var(OUT)",
+            "SEL.ENO -> RCoil(EMPTY)",
+            "RCoil(EMPTY) -> RightRail"
+        ]
+    );
+}
+
+#[test]
+fn f4_stack_int_fbd_dispatch() {
+    let src = format!(
+        "FUNCTION_BLOCK STACK_INT\n{}\n{}END_FUNCTION_BLOCK\n",
+        STACK_INT_DECL,
+        r#"
+R1-----+--->>RESET
+       |                              +-+
+       +-----------------------------O|&|---<RETURN>
+       |    +-+    +-----------------O| |
+       +---O|&|    |              +--O| |
+POP---------| |----+--->>POP_STK  |   +-+
+EMPTY------O| |    |              |
+            +-+    |    +-+       |
+                   +---O|&|-------+--->>PUSH_STK
+R1---------------------O| |
+PUSH--------------------| |
+OFLO-------------------O| |
+                        +-+
+RESET:
+1---->>X
+POP_STK:
+1---->>X
+PUSH_STK:
+1---->>X
+X:
+1---<RETURN>
+"#
+    );
+    let p = parse_src(&src).ok();
+    let g = p.graphic();
+    assert_eq!(g.language, GraphicLanguage::Fbd);
+    assert_eq!(g.networks.len(), 5);
+    assert_nets!(
+        p,
+        &g.networks[0],
+        [
+            "Src(R1) -> &.!in0, &.!in0, Jump(RESET)",
+            "Src(POP) -> &.in1",
+            "Src(EMPTY) -> &.!in2",
+            "&.out0 -> &.!in0, &.!in1, Jump(POP_STK)",
+            "Src(R1) -> &.!in1",
+            "Src(PUSH) -> &.in2",
+            "Src(OFLO) -> &.!in3",
+            "&.out0 -> &.!in2, Jump(PUSH_STK)",
+            "&.out0 -> Return"
+        ]
+    );
+    assert_eq!(g.networks[4].label.as_ref().unwrap().text, "X");
+}
