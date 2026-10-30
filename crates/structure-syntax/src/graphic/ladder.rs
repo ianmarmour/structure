@@ -294,8 +294,7 @@ impl<'a> NetCtx<'a> {
         let mut parts: Vec<(usize, usize, usize, String)> = Vec::new();
         if let Some(&r) = middle.keys().next() {
             let mut cur = r;
-            loop {
-                let Some(ws) = middle.remove(&cur) else { break };
+            while let Some(ws) = middle.remove(&cur) {
                 for (s0, e0, t) in ws {
                     parts.push((cur, s0, e0, t));
                 }
@@ -566,10 +565,10 @@ impl<'a> NetCtx<'a> {
                     let var = self.elem_var(i, span, "coil");
                     (NodeKind::Coil { var, kind: *k }, true, true)
                 }
-                ElemKind::Jump(_) => (NodeKind::Jump(name_ident(self)), true, false),
+                ElemKind::Jump => (NodeKind::Jump(name_ident(self)), true, false),
                 ElemKind::Return => (NodeKind::Return, true, false),
-                ElemKind::ConnOut(_) => (NodeKind::ConnectorOut(name_ident(self)), true, false),
-                ElemKind::ConnIn(_) => (NodeKind::ConnectorIn(name_ident(self)), false, true),
+                ElemKind::ConnOut => (NodeKind::ConnectorOut(name_ident(self)), true, false),
+                ElemKind::ConnIn => (NodeKind::ConnectorIn(name_ident(self)), false, true),
             };
             let node = self.draft.node(kind, span, pos);
             let pi = if has_in { Some(self.pin_at(node, 0, false, left)) } else { None };

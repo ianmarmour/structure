@@ -974,7 +974,10 @@ fn block<'a>(nw: &'a Network, ty: &str) -> &'a Node {
     nw.nodes.iter().find(|n| matches!(&n.kind, NodeKind::Block { type_name, .. } if type_name.text == ty)).unwrap_or_else(|| panic!("no block {}", ty))
 }
 
-fn pins(n: &Node) -> (Vec<(Option<String>, bool, Option<Edge>)>, Vec<(Option<String>, bool, Option<Edge>)>) {
+/// (formal name, negated, edge) of each pin.
+type PinDesc = (Option<String>, bool, Option<Edge>);
+
+fn pins(n: &Node) -> (Vec<PinDesc>, Vec<PinDesc>) {
     let NodeKind::Block { inputs, outputs, .. } = &n.kind else { panic!("not a block") };
     let f = |v: &Vec<structure_syntax::graphic::BlockPin>| v.iter().map(|p| (p.name.as_ref().map(|n| n.text.clone()), p.negated, p.edge)).collect();
     (f(inputs), f(outputs))
