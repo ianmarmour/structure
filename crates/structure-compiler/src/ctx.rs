@@ -75,10 +75,25 @@ impl VarInfo {
     }
 
     /// Location of the variable's storage relative to the instance/frame.
+    /// References that are set by invocations (in-out variables and
+    /// function block instances passed as inputs) are checked at run time
+    /// (2.5.2.2 rule 11: "no value specified").
     pub fn loc(&self) -> Loc {
+        let checked = |slot: Loc| -> Loc {
+            Loc::Ind(Box::new(crate::ir::Ex::Check {
+                ty: structure_runtime::ty::Ty::U64,
+                lo: 1,
+                hi: i64::MAX,
+                code: structure_runtime::error::TrapCode::NoValueSpecified,
+                value: Box::new(crate::ir::Ex::Load(structure_runtime::ty::Ty::U64, slot)),
+            }))
+        };
+        let needs_check = matches!(self.kind, VKind::InOut | VKind::Input);
         match self.storage {
             Storage::Inst(o) => Loc::Ip(o as u32),
             Storage::Frame(o) => Loc::Fp(o as u32),
+            Storage::InstRef(o) if needs_check => checked(Loc::Ip(o as u32)),
+            Storage::FrameRef(o) if needs_check => checked(Loc::Fp(o as u32)),
             Storage::InstRef(o) => Loc::Ip(o as u32).deref(),
             Storage::FrameRef(o) => Loc::Fp(o as u32).deref(),
         }
@@ -289,6 +304,7 @@ impl<'s> Ctx<'s> {
             || key == "STRING"
             || key == "WSTRING"
             || (self.std_function_names.contains(key) && !self.in_std)
+            || (!self.in_std && self.pou_by_name.get(key).map(|p| self.pous[*p].std).unwrap_or(false))
     }
 
     /// Registers the library elements of a parsed source unit.

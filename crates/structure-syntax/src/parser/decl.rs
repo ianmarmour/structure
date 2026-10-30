@@ -305,6 +305,11 @@ impl<'a> Parser<'a> {
                 }
             }
         } else if !self.at_kw(Keyword::At) {
+            if let TokenKind::Kw(k) = self.kind(0) {
+                self.error_here(format!("keyword {} cannot be used as a variable name (2.1.3)", k.as_str()));
+                self.recover(&[TokenKind::Kw(Keyword::EndVar)]);
+                return None;
+            }
             self.expected("a variable declaration");
             self.recover(&[TokenKind::Kw(Keyword::EndVar)]);
             return None;
