@@ -625,10 +625,15 @@ impl<'c, 's> Lowerer<'c, 's> {
 
     /// Fills missing extensible inputs with zero literals and returns all
     /// values.
-    fn all_args(&mut self, vals: Vec<Option<(V, Span)>>, span: Span) -> Vec<(V, Span)> {
-        vals.into_iter()
-            .map(|v| v.unwrap_or_else(|| (V { kind: VK::IntLit(0), ty: self.cx.types.error, pre: vec![] }, span)))
-            .collect()
+    /// The values of the inputs of an extensible function (at least `min`);
+    /// inputs without a value in a formal invocation take the initial value
+    /// of their type (2.5.1.1).
+    fn all_args(&mut self, vals: Vec<Option<(V, Span)>>, name: &str, min: usize, span: Span) -> Option<Vec<(V, Span)>> {
+        if vals.len() < min {
+            self.cx.error(format!("{} requires at least {} inputs", name, min), span);
+            return None;
+        }
+        Some(vals.into_iter().map(|v| v.unwrap_or_else(|| (V { kind: VK::IntLit(0), ty: self.cx.types.error, pre: vec![] }, span))).collect())
     }
 
     /// Evaluates a value once into a temporary when it is not already a
@@ -770,7 +775,7 @@ impl<'c, 's> Lowerer<'c, 's> {
                     let Some((v, s)) = self.arg(&mut vals, 0, span) else { return V::err(&self.cx.types) };
                     return self.typed_arg(v, ty, s);
                 }
-                let args = self.all_args(vals, span);
+                let Some(args) = self.all_args(vals, &name.text, 2, span) else { return V::err(&self.cx.types) };
                 let bop = match op {
                     Arith::Add => BinaryOp::Add,
                     Arith::Mul => BinaryOp::Mul,
@@ -820,7 +825,7 @@ impl<'c, 's> Lowerer<'c, 's> {
                 V::val(Ex::Bin(bop, e.ty(), Box::new(ex), Box::new(Ex::Conv(ne.ty(), Ty::I64, Box::new(nex)))), self.elem_ty(e))
             }
             StdFn::Bitwise { op, ty } => {
-                let args = self.all_args(vals, span);
+                let Some(args) = self.all_args(vals, &name.text, if op == Bitwise::Not { 1 } else { 2 }, span) else { return V::err(&self.cx.types) };
                 if op == Bitwise::Not {
                     let (v, s) = args.into_iter().next().unwrap();
                     let v = self.typed_arg(v, ty, s);
@@ -852,7 +857,7 @@ impl<'c, 's> Lowerer<'c, 's> {
                 acc
             }
             StdFn::Compare { op, ty } => {
-                let args = self.all_args(vals, span);
+                let Some(args) = self.all_args(vals, &name.text, 2, span) else { return V::err(&self.cx.types) };
                 let c = match op {
                     Compare::Gt => CmpOp::Gt,
                     Compare::Ge => CmpOp::Ge,
@@ -897,7 +902,7 @@ impl<'c, 's> Lowerer<'c, 's> {
             }
             StdFn::Max { ty } | StdFn::Min { ty } => {
                 let is_max = matches!(f, StdFn::Max { .. });
-                let args = self.all_args(vals, span);
+                let Some(args) = self.all_args(vals, &name.text, 2, span) else { return V::err(&self.cx.types) };
                 let mut it = args.into_iter();
                 let (first, s0) = it.next().unwrap();
                 let first = self.typed_arg(first, ty, s0);
@@ -958,7 +963,7 @@ impl<'c, 's> Lowerer<'c, 's> {
                 };
                 let kt = self.temp(64);
                 pre.push(St::Store(Ty::I64, kt.clone(), Ex::Conv(ke.ty(), Ty::I64, Box::new(kex))));
-                let ins: Vec<(V, Span)> = self.all_args(vals.split_off(1), span);
+                let Some(ins) = self.all_args(vals.split_off(1), &name.text, 1, span) else { return V::err(&self.cx.types) };
                 let n = ins.len();
                 // Determine the common type of the inputs.
                 let mut common: Option<V> = None;
