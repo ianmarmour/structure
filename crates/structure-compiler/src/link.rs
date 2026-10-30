@@ -50,7 +50,6 @@ struct ResLayout {
     programs: Vec<ProgInst>,
     /// (location, module path) -> area
     io: HashMap<(char, Vec<u32>), Area>,
-    span: Span,
 }
 
 /// Placement of a directly represented variable: (location, module path,
@@ -327,7 +326,6 @@ impl<'c, 's> Linker<'c, 's> {
                 globals,
                 programs,
                 io: HashMap::new(),
-                span: r.span,
             });
         }
         // VAR_CONFIG and VAR_ACCESS direct variables
@@ -1139,18 +1137,17 @@ impl<'c, 's> Linker<'c, 's> {
     }
 
     fn walk_instance(&mut self, pou: usize, addr: u64, segs: &[Seg], span: Span) -> Option<(u64, TypeId, Option<VKind>, bool)> {
-        let Some(Seg::Name(n, _)) = segs.first() else {
+        let Some(Seg::Name(n, nspan)) = segs.first() else {
             return Some((addr, self.cx.pous[pou].inst_type.unwrap(), None, false));
         };
-        let Some(v) = self.cx.pous[pou].var(n).cloned() else {
-            // SFC steps
-            self.cx.error_clause("2.7.1", format!("{} has no variable named {}", self.cx.pous[pou].name, n), span);
-            return None;
+        let nspan = *nspan;
+        let v = match self.cx.pous[pou].var(n).cloned() {
+            Some(v) if v.kind != VKind::Hidden => v,
+            _ => {
+                self.cx.error_clause("2.7.1", format!("{} has no variable named {}", self.cx.pous[pou].name, n), nspan);
+                return None;
+            }
         };
-        if v.kind == VKind::Hidden {
-            self.cx.error_clause("2.7.1", format!("{} has no variable named {}", self.cx.pous[pou].name, n), span);
-            return None;
-        }
         let a = match v.storage {
             Storage::Inst(o) => addr + o,
             _ => {
@@ -1177,8 +1174,11 @@ impl<'c, 's> Linker<'c, 's> {
         let Some(s) = segs.first() else { return Some((addr, ty, kind, constant)) };
         let r = self.cx.types.resolve(ty);
         match (s, self.cx.types.kind(r).clone()) {
-            (Seg::Name(n, _), TypeKind::Struct { fields, .. }) => {
-                let f = fields.iter().find(|f| f.name == *n)?;
+            (Seg::Name(n, nspan), TypeKind::Struct { fields, .. }) => {
+                let Some(f) = fields.iter().find(|f| f.name == *n) else {
+                    self.cx.error(format!("{} has no element named {}", self.cx.types.name(ty), n), *nspan);
+                    return None;
+                };
                 self.walk_value(addr + f.offset, f.ty, &segs[1..], kind, constant, span)
             }
             (Seg::Name(_, _), TypeKind::Instance { pou }) => self.walk_instance(pou, addr, segs, span),

@@ -136,3 +136,20 @@ fn function_block_rules() {
     // inputs cannot be modified inside the POU
     err("FUNCTION_BLOCK F VAR_INPUT X : INT; END_VAR X := 1; END_FUNCTION_BLOCK", "cannot be modified");
 }
+
+#[test]
+fn access_path_to_unknown_element() {
+    let src = r#"
+TYPE PT : STRUCT X : INT; Y : INT; END_STRUCT; END_TYPE
+PROGRAM P VAR V : PT; END_VAR V.X := 1; END_PROGRAM
+CONFIGURATION C RESOURCE R ON VM TASK T(INTERVAL := T#10ms, PRIORITY := 1); PROGRAM P1 WITH T : P; END_RESOURCE
+VAR_ACCESS
+  A1 : R.P1.V.Z : INT READ_ONLY;
+  A2 : R.P1.W : INT READ_ONLY;
+END_VAR
+END_CONFIGURATION
+"#;
+    let e = errors(src);
+    assert!(e.contains("PT has no element named Z"), "{}", e);
+    assert!(e.contains("P has no variable named W"), "{}", e);
+}
