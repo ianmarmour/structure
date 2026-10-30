@@ -1477,8 +1477,8 @@ fn sfc_steps_and_transition_table_40_41() {
         "VAR X1, X2 : BOOL; END_VAR",
         r#"
    +=======+
-   ||  S1 ||
-   ||     ||
+   ||  S1 ||   (* initial step, *)
+   ||     ||   (* table 40     *)
    +===+===+
        |
        + %IX2.4 & %IX2.3
@@ -1497,12 +1497,20 @@ fn sfc_steps_and_transition_table_40_41() {
        |
    +---+---+
    | STEP9 |
+   +---+---+
+       |
+       + TRUE
+       |
+   +---+---+
+   | STEP10|
    +-------+
 "#,
     ))
     .ok();
-    assert_eq!(steps(&p), ["*S1", "STEP7", "STEP8", "STEP9"]);
-    assert_eq!(transitions(&p), ["S1 -> STEP7 : %IX2.4 & %IX2.3", "STEP7 -> STEP8 : TRAN78", "STEP8 -> STEP9 : X1 OR X2"]);
+    assert_eq!(steps(&p), ["*S1", "STEP7", "STEP8", "STEP9", "STEP10"]);
+    assert_eq!(transitions(&p), ["S1 -> STEP7 : %IX2.4 & %IX2.3", "STEP7 -> STEP8 : TRAN78", "STEP8 -> STEP9 : X1 OR X2", "STEP9 -> STEP10 : TRUE"]);
+    assert!(matches!(&sfc_of(&p).transitions[3].condition, TransitionCondition::St(Expr { kind: ExprKind::Literal(_), .. })));
+    assert!(matches!(&sfc_of(&p).transitions[1].condition, TransitionCondition::St(Expr { kind: ExprKind::Name(_), .. })));
     let t = &sfc_of(&p).transitions[1];
     assert!(t.name.is_none() && t.branch_priority.is_none());
 }

@@ -472,15 +472,10 @@ pub fn parse_sfc(file: &SourceFile, grid: &Grid, diags: &mut Vec<Diagnostic>) ->
     for t in &trans {
         let c = match t.cond {
             Cond::Text(r, c0, c1) => {
-                let text = grid.text(r, c0, c1);
                 let span = grid.span(r, c0, c1 + 1);
-                if text.chars().next().is_some_and(is_ident_start) && text.chars().all(is_ident_char) {
-                    TransitionCondition::St(Expr { kind: ExprKind::Name(Ident::new(text, span)), span })
-                } else {
-                    let (e, dd) = parse_expr_range(file, span.start, span.end);
-                    cx.diags.extend(dd);
-                    TransitionCondition::St(e)
-                }
+                let (e, dd) = parse_expr_range(file, span.start, span.end);
+                cx.diags.extend(dd);
+                TransitionCondition::St(e)
             }
             Cond::Graphic => TransitionCondition::St(err_expr(tspan(t))), // replaced below
             Cond::None => {
