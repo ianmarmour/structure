@@ -1,7 +1,10 @@
 [package]
 name = "structure-compiler"
+description = "Compiler for IEC 61131-3 (2003) programs: semantic analysis, code generation and linking"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
+structure-syntax = { path = "../structure-syntax" }
+structure-runtime = { path = "../structure-runtime" }

@@ -1,0 +1,203 @@
+//! Syntax tree traversal helpers.
+
+use structure_syntax::ast::*;
+use structure_syntax::graphic::{Network, NodeKind};
+
+/// Collects all directly represented variables referenced in a body.
+pub fn direct_vars(body: &Body) -> Vec<DirectVar> {
+    let mut out = Vec::new();
+    body_exprs(body, &mut |e| collect(e, &mut out));
+    out
+}
+
+fn collect(e: &Expr, out: &mut Vec<DirectVar>) {
+    walk_expr(e, &mut |x| {
+        if let ExprKind::DirectVar(d) = &x.kind {
+            if !out.iter().any(|o| o.to_text() == d.to_text()) {
+                out.push(d.clone());
+            }
+        }
+    });
+}
+
+/// Calls `f` on every expression node (pre-order).
+pub fn walk_expr(e: &Expr, f: &mut dyn FnMut(&Expr)) {
+    f(e);
+    match &e.kind {
+        ExprKind::Field { base, .. } => walk_expr(base, f),
+        ExprKind::Index { base, indices } => {
+            walk_expr(base, f);
+            for i in indices {
+                walk_expr(i, f);
+            }
+        }
+        ExprKind::Call(c) => call_exprs(c, f),
+        ExprKind::Unary { operand, .. } => walk_expr(operand, f),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            walk_expr(lhs, f);
+            walk_expr(rhs, f);
+        }
+        ExprKind::Paren(x) => walk_expr(x, f),
+        _ => {}
+    }
+}
+
+fn call_exprs(c: &CallExpr, f: &mut dyn FnMut(&Expr)) {
+    walk_expr(&c.callee, f);
+    for a in &c.args {
+        match a {
+            Arg::Positional(e) | Arg::Input { value: e, .. } => walk_expr(e, f),
+            Arg::Output { target: Some(t), .. } => walk_expr(t, f),
+            _ => {}
+        }
+    }
+}
+
+pub fn stmt_exprs(stmts: &[Stmt], f: &mut dyn FnMut(&Expr)) {
+    for s in stmts {
+        match &s.kind {
+            StmtKind::Assign { target, value } => {
+                f(target);
+                f(value);
+            }
+            StmtKind::Call(c) => {
+                let e = Expr { kind: ExprKind::Call(c.clone()), span: c.span };
+                f(&e);
+            }
+            StmtKind::If { branches, else_body } => {
+                for (c, b) in branches {
+                    f(c);
+                    stmt_exprs(b, f);
+                }
+                if let Some(b) = else_body {
+                    stmt_exprs(b, f);
+                }
+            }
+            StmtKind::Case { selector, arms, else_body } => {
+                f(selector);
+                for a in arms {
+                    stmt_exprs(&a.body, f);
+                }
+                if let Some(b) = else_body {
+                    stmt_exprs(b, f);
+                }
+            }
+            StmtKind::For { from, to, by, body, .. } => {
+                f(from);
+                f(to);
+                if let Some(b) = by {
+                    f(b);
+                }
+                stmt_exprs(body, f);
+            }
+            StmtKind::While { cond, body } => {
+                f(cond);
+                stmt_exprs(body, f);
+            }
+            StmtKind::Repeat { body, until } => {
+                stmt_exprs(body, f);
+                f(until);
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn il_exprs(list: &[IlInstr], f: &mut dyn FnMut(&Expr)) {
+    for i in list {
+        match &i.op {
+            IlOp::Simple { operand: Some(e), .. } => f(e),
+            IlOp::Deferred { operand, body, .. } => {
+                if let Some(e) = operand {
+                    f(e);
+                }
+                il_exprs(body, f);
+            }
+            IlOp::Function { operands, .. } => {
+                for e in operands {
+                    f(e);
+                }
+            }
+            IlOp::FormalFunction { params, .. } => il_params(params, f),
+            IlOp::Call { instance, args, .. } => {
+                f(instance);
+                match args {
+                    IlCallArgs::Formal(p) => il_params(p, f),
+                    IlCallArgs::NonFormal(ops) => {
+                        for e in ops {
+                            f(e);
+                        }
+                    }
+                    IlCallArgs::None => {}
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn il_params(params: &[IlParam], f: &mut dyn FnMut(&Expr)) {
+    for p in params {
+        match p {
+            IlParam::Input { value: IlParamValue::Operand(e), .. } => f(e),
+            IlParam::Input { value: IlParamValue::Nested(l), .. } => il_exprs(l, f),
+            IlParam::Output { target, .. } => f(target),
+        }
+    }
+}
+
+pub fn network_exprs(nets: &[Network], f: &mut dyn FnMut(&Expr)) {
+    for n in nets {
+        for node in &n.nodes {
+            match &node.kind {
+                NodeKind::Contact { var, .. } | NodeKind::Coil { var, .. } | NodeKind::Source(var) | NodeKind::Sink(var) => f(var),
+                NodeKind::ActionBlock { time, indicator, .. } => {
+                    if let Some(t) = time {
+                        f(t);
+                    }
+                    if let Some(i) = indicator {
+                        f(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+pub fn sfc_exprs(s: &Sfc, f: &mut dyn FnMut(&Expr)) {
+    for st in &s.steps {
+        for a in &st.associations {
+            if let Some(t) = &a.time {
+                f(t);
+            }
+        }
+    }
+    for t in &s.transitions {
+        match &t.condition {
+            TransitionCondition::St(e) => f(e),
+            TransitionCondition::Il(l) => il_exprs(l, f),
+            TransitionCondition::Graphic(g) => network_exprs(&g.networks, f),
+            TransitionCondition::Named => {}
+        }
+    }
+    for a in &s.actions {
+        body_exprs(&a.body, f);
+    }
+}
+
+/// Calls `f` on every top-level expression of a body.
+pub fn body_exprs(body: &Body, f: &mut dyn FnMut(&Expr)) {
+    match body {
+        Body::Empty => {}
+        Body::St(s) => stmt_exprs(s, f),
+        Body::Il(l) => il_exprs(l, f),
+        Body::Sfc(s) => sfc_exprs(s, f),
+        Body::Graphic(g) => {
+            network_exprs(&g.networks, f);
+            if let Some(s) = &g.sfc {
+                sfc_exprs(s, f);
+            }
+        }
+    }
+}
