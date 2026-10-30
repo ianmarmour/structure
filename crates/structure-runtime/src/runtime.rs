@@ -680,6 +680,63 @@ fn copy_between(src: &Memory, src_addr: u64, dst: &mut Memory, dst_addr: u64, bi
 }
 
 /// Splits a path like `A.B[1,2].C` into segments.
+/// A directly represented variable (`%IX1.2`, `%QW4`, `%MD8`) of a
+/// resource, located as by the linker (2.4.1.1).
+fn resolve_direct(image: &Image, resource: &str, dv: &str) -> Result<(u64, TypeDesc), String> {
+    let r = if resource.is_empty() {
+        match image.resources.as_slice() {
+            [r] => r,
+            _ => return Err(format!("name the resource of {} (RESOURCE.{})", dv, dv)),
+        }
+    } else {
+        image.resources.iter().find(|r| r.name.eq_ignore_ascii_case(resource)).ok_or_else(|| format!("unknown resource '{}'", resource))?
+    };
+    let invalid = || format!("invalid directly represented variable '{}'", dv);
+    let text = dv.trim().to_uppercase();
+    let mut chars = text.chars().skip(1).peekable();
+    let loc = chars.next().filter(|c| matches!(c, 'I' | 'Q' | 'M')).ok_or_else(invalid)?;
+    let size = match chars.peek() {
+        Some(c @ ('X' | 'B' | 'W' | 'D' | 'L')) => {
+            let c = *c;
+            chars.next();
+            c
+        }
+        _ => 'X',
+    };
+    let fields: Vec<u64> = chars.collect::<String>().split('.').map(|f| f.parse::<u64>()).collect::<Result<_, _>>().map_err(|_| invalid())?;
+    if fields.is_empty() {
+        return Err(invalid());
+    }
+    let n = fields.len();
+    let (path, off, ty, bits) = match size {
+        'X' if n == 1 => (vec![], fields[0], TypeDesc::Bool, 1),
+        'X' => (fields[..n - 2].to_vec(), fields[n - 2] * 8 + fields[n - 1], TypeDesc::Bool, 1),
+        s => {
+            let (bytes, ty) = match s {
+                'B' => (1, TypeDesc::Byte),
+                'W' => (2, TypeDesc::Word),
+                'D' => (4, TypeDesc::DWord),
+                _ => (8, TypeDesc::LWord),
+            };
+            (fields[..n - 1].to_vec(), fields[n - 1] * bytes * 8, ty, bytes * 8)
+        }
+    };
+    let area = if path.is_empty() {
+        match loc {
+            'I' => r.input,
+            'Q' => r.output,
+            _ => r.memory,
+        }
+    } else {
+        let path: Vec<u32> = path.iter().map(|&p| p as u32).collect();
+        r.io_modules.iter().find(|m| m.location == loc && m.path == path).map(|m| m.area).ok_or_else(|| format!("{} is not used by resource {}", dv, r.name))?
+    };
+    if off + bits > area.size * 8 {
+        return Err(format!("{} is outside the process image of resource {}", dv, r.name));
+    }
+    Ok((area.base * 8 + off, ty))
+}
+
 fn split_path(path: &str) -> Result<Vec<(String, Vec<i64>)>, String> {
     let mut out = Vec::new();
     for seg in path.split('.') {
@@ -700,6 +757,9 @@ fn split_path(path: &str) -> Result<Vec<(String, Vec<i64>)>, String> {
 }
 
 pub fn resolve_path(image: &Image, mem: &Memory, path: &str) -> Result<(u64, TypeDesc), String> {
+    if let Some(i) = path.find('%') {
+        return resolve_direct(image, path[..i].trim().trim_end_matches('.'), &path[i..]);
+    }
     let segs = split_path(path.trim())?;
     // longest symbol prefix
     let mut found = None;

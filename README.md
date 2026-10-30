@@ -24,7 +24,17 @@ With `--program`, a default configuration runs the program in a cyclic task
 (`--interval`, 10 ms by default) as the instance `MAIN.<PROGRAM>_INSTANCE`;
 `--watch` and `--set` accept the program's variable names directly. Without
 it, the configurations of the source files are used and variables are named
-by their full path (`RESOURCE.INSTANCE.VARIABLE`, or an access path).
+by their full path (`RESOURCE.INSTANCE.VARIABLE`), an access path, or a
+directly represented variable (`%IX1`, `RESOURCE.%QW4`).
+
+`examples/agv.st` is the AGV program of annex F.8, drawn entirely in the
+semigraphic form: the declaration of the program, its body as two
+sequential function charts and the configuration that runs it:
+
+```
+target/release/structure run examples/agv.st --for T#200ms --set %IX3=TRUE \
+    --set %IX1=TRUE --every T#50ms --watch %QX1 --watch %QX2
+```
 
 | Command | Purpose |
 |---|---|

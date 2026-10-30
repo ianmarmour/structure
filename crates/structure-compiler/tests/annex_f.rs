@@ -460,6 +460,11 @@ END_CONFIGURATION
     assert!(q(&mut rt, 5, 5), "silo valve open while filling");
     rt.run_for(300_000);
     assert_eq!(rt.io(0, 'Q')[6], 0x03, "bin level reached the set point");
+    // directly represented variables by name
+    assert_eq!(rt.read("PROC1.%QB6").unwrap().to_string(), "3");
+    assert_eq!(rt.read("%IB2").unwrap().to_string(), "3");
+    assert_eq!(rt.read("%QX4.0").unwrap(), Value::Bool(true));
+    assert!(rt.read("%QW999").is_err());
     assert!(!q(&mut rt, 5, 5), "silo valve closed");
     assert!(boolean(&rt, "PROC1.G.LOAD_WAIT.X"));
     // truck on ramp, load
