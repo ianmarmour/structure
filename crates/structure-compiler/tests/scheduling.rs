@@ -157,3 +157,66 @@ END_RESOURCE END_CONFIGURATION"
     assert!(rt.task_overruns(0, 0) > 0);
     assert!(!rt.errors.is_empty());
 }
+
+#[test]
+fn graphical_tasks_and_associations_table_50() {
+    // features 2a, 2b (TASK blocks), 4a (programs) and 4b (function blocks)
+    let src = r#"
+FUNCTION_BLOCK COUNTER
+VAR_OUTPUT N : DINT; END_VAR
+N := N + 1;
+END_FUNCTION_BLOCK
+PROGRAM F VAR_OUTPUT N : DINT; END_VAR N := N + 1; END_PROGRAM
+PROGRAM H VAR_OUTPUT N : DINT; END_VAR N := N + 1; END_PROGRAM
+PROGRAM G
+VAR_OUTPUT OUT1 : DINT; END_VAR
+VAR FB1 : COUNTER; FB2 : COUNTER; END_VAR
+FB1();
+FB2();
+OUT1 := FB1.N;
+END_PROGRAM
+CONFIGURATION C
+  VAR_GLOBAL W : DINT; TRIG : BOOL; END_VAR
+  RESOURCE R ON VM
+             SLOW_1                  FAST_1                  INT_2
+           +---------+             +---------+             +---------+
+           |  TASK   |             |  TASK   |             |  TASK   |
+           |SINGLE   |             |SINGLE   |       TRIG--|SINGLE   |
+  t#20ms---|INTERVAL |    t#10ms---|INTERVAL |             |INTERVAL |
+       2---|PRIORITY |         1---|PRIORITY |          3--|PRIORITY |
+           +---------+             +---------+             +---------+
+
+        P1                     P2
+     +-------+      +------------------------------+
+     |   F   |      |              G               |
+     |       |      |                          OUT1|---W
+     +-------+      |    FB1           FB2         |
+     |SLOW_1 |      |  +-------+     +-------+     |
+     +-------+      |  |COUNTER|     |COUNTER|     |
+                    |  +-------+     +-------+     |
+                    |  |SLOW_1 |     |FAST_1 |     |
+                    |  +-------+     +-------+     |
+                    +------------------------------+
+                    |            FAST_1            |
+                    +------------------------------+
+
+        P3
+     +-------+
+     |   H   |
+     +-------+
+     | INT_2 |
+     +-------+
+  END_RESOURCE
+END_CONFIGURATION
+"#;
+    let mut rt = runtime(src, true);
+    rt.run_for(100_000);
+    assert_eq!(rt.read("R.P1.N").unwrap(), Value::Int(5));
+    assert_eq!(rt.read("R.P2.FB2.N").unwrap(), Value::Int(10));
+    assert_eq!(rt.read("R.P2.FB1.N").unwrap(), Value::Int(5));
+    assert!(matches!(rt.read("W").unwrap(), Value::Int(4 | 5)));
+    assert_eq!(rt.read("R.P3.N").unwrap(), Value::Int(0));
+    rt.write("TRIG", &Value::Bool(true)).unwrap();
+    rt.run_for(20_000);
+    assert_eq!(rt.read("R.P3.N").unwrap(), Value::Int(1), "single (event) task");
+}

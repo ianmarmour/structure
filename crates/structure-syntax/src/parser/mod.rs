@@ -2,6 +2,7 @@
 
 mod config;
 mod decl;
+mod graphic_config;
 mod graphic_decl;
 mod il;
 mod sfc;

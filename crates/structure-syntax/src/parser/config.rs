@@ -117,6 +117,8 @@ impl<'a> Parser<'a> {
                         programs.push(p);
                     }
                 }
+                // graphical representation of tasks and programs (table 50)
+                _ if self.at_resource_drawing() => self.resource_drawing(&mut tasks, &mut programs),
                 _ => {
                     self.expected("TASK, PROGRAM, VAR_GLOBAL or END_RESOURCE");
                     self.bump();

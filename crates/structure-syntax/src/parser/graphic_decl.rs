@@ -22,23 +22,23 @@ use crate::source::Span;
 
 /// A line of text by column (tabs expanded to multiples of 8), with the
 /// byte offset of each column.
-struct Row {
-    chars: Vec<char>,
-    offs: Vec<u32>,
-    end: u32,
+pub(crate) struct Row {
+    pub(crate) chars: Vec<char>,
+    pub(crate) offs: Vec<u32>,
+    pub(crate) end: u32,
 }
 
 impl Row {
-    fn at(&self, c: usize) -> char {
+    pub(crate) fn at(&self, c: usize) -> char {
         self.chars.get(c).copied().unwrap_or(' ')
     }
 
-    fn off(&self, c: usize) -> u32 {
+    pub(crate) fn off(&self, c: usize) -> u32 {
         self.offs.get(c).copied().unwrap_or(self.end)
     }
 
     /// Words (identifier characters) in columns `c0..c1`.
-    fn words(&self, c0: usize, c1: usize) -> Vec<(usize, usize)> {
+    pub(crate) fn words(&self, c0: usize, c1: usize) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
         let mut c = c0;
         while c < c1 {
@@ -55,7 +55,7 @@ impl Row {
         out
     }
 
-    fn text(&self, c0: usize, c1: usize) -> String {
+    pub(crate) fn text(&self, c0: usize, c1: usize) -> String {
         (c0..c1).map(|c| self.at(c)).collect()
     }
 }
@@ -71,7 +71,7 @@ pub(crate) struct Interface {
 }
 
 impl<'a> Parser<'a> {
-    fn grid_row(&self, line: u32) -> Row {
+    pub(crate) fn grid_row(&self, line: u32) -> Row {
         let start = self.file.line_start(line as usize - 1);
         let text = self.file.line_text(line);
         let (mut chars, mut offs) = (Vec::new(), Vec::new());
@@ -90,7 +90,7 @@ impl<'a> Parser<'a> {
         Row { chars, offs, end: start + text.len() as u32 }
     }
 
-    fn row_span(&self, row: &Row, c0: usize, c1: usize) -> Span {
+    pub(crate) fn row_span(&self, row: &Row, c0: usize, c1: usize) -> Span {
         Span::new(self.file.id, row.off(c0), if c1 >= row.chars.len() { row.end } else { row.off(c1) })
     }
 

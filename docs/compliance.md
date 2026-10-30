@@ -345,8 +345,12 @@ language features:
 | 49 | 13b | VAR_EXTERNAL CONSTANT in RESOURCE declarations |
 | 50 | 1a | Textual declaration of periodic TASK |
 | 50 | 1b | Textual declaration of non-periodic TASK |
+| 50 | 2a | Graphical representation of periodic TASKs |
+| 50 | 2b | Graphical representation of non-periodic TASKs |
 | 50 | 3a | Textual association with PROGRAMs |
 | 50 | 3b | Textual association with function blocks |
+| 50 | 4a | Graphical association with PROGRAMs |
+| 50 | 4b | Graphical association with function blocks within PROGRAMs |
 | 50 | 5a | Non-preemptive scheduling (option `--non-preemptive`) |
 | 50 | 5b | Preemptive scheduling (default) |
 
@@ -450,8 +454,10 @@ types. The effects are specified in `implementation-parameters.md`
 Graphical elements are written in the semigraphic form with the
 characters of ISO/IEC 10646-1 (the odd-numbered features of table 57). They
 can be used for the bodies of program organization units, actions and
-transitions, and for the graphical declaration of the external interface of
-program organization units (figures 6 b, 11, 12 a).
+transitions, for the graphical declaration of the external interface of
+program organization units (figures 6 b, 11, 12 a), and inside RESOURCE
+declarations for tasks and their association with programs and function
+blocks (table 50); `structure fmt` writes the latter in textual form.
 
 | Table No. | Feature No. | Features description |
 |---|---|---|
