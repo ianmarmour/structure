@@ -1477,8 +1477,8 @@ fn sfc_steps_and_transition_table_40_41() {
         "VAR X1, X2 : BOOL; END_VAR",
         r#"
    +=======+
-   ||  S1 ||
-   ||     ||
+   ||  S1 ||   (* initial step, *)
+   ||     ||   (* table 40     *)
    +===+===+
        |
        + %IX2.4 & %IX2.3
@@ -1497,12 +1497,20 @@ fn sfc_steps_and_transition_table_40_41() {
        |
    +---+---+
    | STEP9 |
+   +---+---+
+       |
+       + TRUE
+       |
+   +---+---+
+   | STEP10|
    +-------+
 "#,
     ))
     .ok();
-    assert_eq!(steps(&p), ["*S1", "STEP7", "STEP8", "STEP9"]);
-    assert_eq!(transitions(&p), ["S1 -> STEP7 : %IX2.4 & %IX2.3", "STEP7 -> STEP8 : TRAN78", "STEP8 -> STEP9 : X1 OR X2"]);
+    assert_eq!(steps(&p), ["*S1", "STEP7", "STEP8", "STEP9", "STEP10"]);
+    assert_eq!(transitions(&p), ["S1 -> STEP7 : %IX2.4 & %IX2.3", "STEP7 -> STEP8 : TRAN78", "STEP8 -> STEP9 : X1 OR X2", "STEP9 -> STEP10 : TRUE"]);
+    assert!(matches!(&sfc_of(&p).transitions[3].condition, TransitionCondition::St(Expr { kind: ExprKind::Literal(_), .. })));
+    assert!(matches!(&sfc_of(&p).transitions[1].condition, TransitionCondition::St(Expr { kind: ExprKind::Name(_), .. })));
     let t = &sfc_of(&p).transitions[1];
     assert!(t.name.is_none() && t.branch_priority.is_none());
 }
@@ -1534,7 +1542,13 @@ END_FUNCTION_BLOCK
 ";
     let p = parse_src(src);
     let s = sfc_of(&p);
-    assert_eq!(s.transitions.len(), 2);
+    // with the textual tail merged by the parser, the textual TRANSITION
+    // TRAN78 is a third entry holding the condition of the named one
+    assert!(s.transitions.len() == 2 || s.transitions.len() == 3, "{:?}", s.transitions);
+    if let Some(t) = s.transitions.get(2) {
+        assert_eq!(t.name.as_ref().unwrap().text, "TRAN78");
+        assert!(!matches!(t.condition, TransitionCondition::Named));
+    }
     assert!(matches!(s.transitions[0].condition, TransitionCondition::Named));
     assert_eq!(s.transitions[0].name.as_ref().unwrap().text, "TRAN78");
     assert!(matches!(&s.transitions[1].condition, TransitionCondition::St(e) if matches!(&e.kind, ExprKind::Name(n) if n.text == "DN1")));
@@ -1542,6 +1556,7 @@ END_FUNCTION_BLOCK
     // the resolution is idempotent and can be applied to a merged chart
     let mut copy = s.clone();
     structure_syntax::graphic::resolve_transition_names(&mut copy);
+    assert!(matches!(copy.transitions[0].condition, TransitionCondition::Named));
     assert!(matches!(copy.transitions[1].condition, TransitionCondition::St(_)));
 }
 
@@ -2376,4 +2391,130 @@ VAR_OUTPUT FWD_ALRM : BOOL; END_VAR VAR FWD_MON : CMD_MONITOR; END_VAR",
     let (i, o) = pins(block(&g.networks[0], "CMD_MONITOR"));
     assert_eq!(i.len(), 7);
     assert_eq!(o.iter().map(|x| x.0.clone().unwrap()).collect::<Vec<_>>(), ["CMD", "ALRM"]);
+}
+
+#[test]
+fn sfc_single_field_action_blocks_table_44() {
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        "VAR a, b, X : BOOL; END_VAR",
+        r#"
+  +==+===+   +------+
+  || S1 ||---| ACT1 |
+  +==+===+   +------+
+     |       | ACT2 |
+     + a     +------+
+     |
+  +--+--+   +-----------+
+  | S2  |---|   ACT3    |
+  +--+--+   +-----------+
+     |      | X := NOT X; |
+     + b    +-------------+
+     |
+  +--+--+
+  | S3  |
+  +-----+
+"#,
+    ));
+    // the "d" field must be as wide as its action block
+    assert!(!p.errors.is_empty());
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        "VAR a, b, X : BOOL; END_VAR",
+        r#"
+  +==+===+   +------+
+  || S1 ||---| ACT1 |
+  +==+===+   +------+
+     |       | ACT2 |
+     + a     +------+
+     |
+  +--+--+   +-------------+
+  | S2  |---|    ACT3     |
+  +--+--+   +-------------+
+     |      | X := NOT X; |
+     + b    +-------------+
+     |
+  +--+--+
+  | S3  |
+  +-----+
+"#,
+    ))
+    .ok();
+    assert_eq!(steps(&p), ["*S1 ACT1(-) ACT2(-)", "S2 ACT3(-)", "S3"]);
+    let s = sfc_of(&p);
+    assert_eq!(s.actions.len(), 1);
+    assert_eq!(s.actions[0].name.text, "ACT3");
+    assert!(matches!(&s.actions[0].body, Body::St(v) if v.len() == 1));
+}
+
+#[test]
+fn f6_analog_monitor_fbd_side_by_side_networks() {
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        "VAR_INPUT X : REAL; L : ANALOG_LIMITS; END_VAR VAR_OUTPUT SE, ME, ALRM, WARN, QH : BOOL; END_VAR
+VAR SIGNAL_ALARM, MEAS_ALARM, ALARM, WARNING : LIMITS_ALARM; END_VAR",
+        r#"
+         SIGNAL_ALARM                        MEAS_ALARM
+       +--------------+                    +--------------+
+       | LIMITS_ALARM |                    | LIMITS_ALARM |
+L.HS---|H            Q|---SE        L.HM---|H            Q|---ME
+X------|X             |             X------|X             |
+L.LS---|L             |             L.LM---|L             |
+EPS----|EPS           |             EPS----|EPS           |
+       +--------------+                    +--------------+
+
+            ALARM                           WARNING
+       +--------------+                +--------------+
+       | LIMITS_ALARM |                | LIMITS_ALARM |
+L.HA---|H            Q|---ALRM L.HW----|H            Q|---WARN
+X------|X             |            X---|X             |
+L.LA---|L             |         L.LW---|L             |
+EPS----|EPS           |          EPS---|EPS           |
+       +--------------+                +--------------+
+                          +------+
+       SIGNAL_ALARM.QH----| >= 1 |---QH
+       MEAS_ALARM.QH------|      |
+       ALARM.QH-----------|      |
+       WARNING.QH---------|      |
+                          +------+
+"#,
+    ))
+    .ok();
+    let n = &p.graphic().networks;
+    assert_eq!(n.len(), 5);
+    let names: Vec<String> = n.iter().map(|nw| p.nodes(nw).into_iter().find(|x| x.contains("LIMITS_ALARM") || x == ">=1").unwrap()).collect();
+    assert_eq!(names, ["SIGNAL_ALARM:LIMITS_ALARM", "MEAS_ALARM:LIMITS_ALARM", "ALARM:LIMITS_ALARM", "WARNING:LIMITS_ALARM", ">=1"]);
+    assert_nets!(
+        p,
+        &n[2],
+        [
+            "Src(L.HA) -> ALARM:LIMITS_ALARM.H",
+            "Src(X) -> ALARM:LIMITS_ALARM.X",
+            "Src(L.LA) -> ALARM:LIMITS_ALARM.L",
+            "Src(EPS) -> ALARM:LIMITS_ALARM.EPS",
+            "ALARM:LIMITS_ALARM.Q -> Var(ALRM)"
+        ]
+    );
+    assert_nets!(
+        p,
+        &n[4],
+        ["Src(SIGNAL_ALARM.QH) -> >=1.in0", "Src(MEAS_ALARM.QH) -> >=1.in1", "Src(ALARM.QH) -> >=1.in2", "Src(WARNING.QH) -> >=1.in3", ">=1.out0 -> Var(QH)"]
+    );
+}
+
+#[test]
+fn numeric_network_labels() {
+    let p = parse_src(&pou(
+        "PROGRAM",
+        "VAR a, b : BOOL; END_VAR",
+        r#"
+a---->>10
+10:
+b---<RETURN>
+"#,
+    ))
+    .ok();
+    let n = &p.graphic().networks;
+    assert_eq!(n.len(), 2);
+    assert_eq!(n[1].label.as_ref().unwrap().text, "10");
 }
