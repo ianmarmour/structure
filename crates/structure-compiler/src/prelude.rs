@@ -167,7 +167,10 @@ VAR
   S_FF : RS; L_TMR : TON; D_TMR : TON; P_TRIG : R_TRIG;
   SD_FF : RS; SD_TMR : TON; DS_TMR : TON; DS_FF : RS;
   SL_FF : RS; SL_TMR : TON;
-  P1_TRIG : R_TRIG; P0_TRIG : F_TRIG; Q_TRIG : F_TRIG;
+  P1_TRIG : R_TRIG;
+  (* Falling edges of Q and P0. Unlike F_TRIG (table 35, note), these do
+     not report an edge on the first execution after a cold restart. *)
+  PREV_Q, PREV_P0 : BOOL;
 END_VAR
 (* 2.6.4.5 rule 4 b) and c): action control contention *)
 IF (SD AND SL_FF.Q1) OR (SL AND SD_FF.Q1) THEN
@@ -185,10 +188,10 @@ SL_FF(S := SL, R1 := R);
 SL_TMR(IN := SL_FF.Q1, PT := T);
 Q := NOT R AND (N OR S_FF.Q1 OR (L AND NOT L_TMR.Q) OR D_TMR.Q OR P_TRIG.Q
      OR SD_TMR.Q OR DS_FF.Q1 OR (SL_FF.Q1 AND NOT SL_TMR.Q));
-Q_TRIG(CLK := Q);
 P1_TRIG(CLK := P1);
-P0_TRIG(CLK := P0);
-A := Q OR Q_TRIG.Q OR P1_TRIG.Q OR P0_TRIG.Q;
+A := Q OR (PREV_Q AND NOT Q) OR P1_TRIG.Q OR (PREV_P0 AND NOT P0);
+PREV_Q := Q;
+PREV_P0 := P0;
 END_FUNCTION_BLOCK
 "#;
 
