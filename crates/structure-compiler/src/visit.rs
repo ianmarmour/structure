@@ -201,3 +201,53 @@ pub fn body_exprs(body: &Body, f: &mut dyn FnMut(&Expr)) {
         }
     }
 }
+
+/// Name of the hidden variable holding the previous state of a
+/// transition-sensing contact or coil (tables 61, 62).
+pub fn edge_memory_name(node: &structure_syntax::graphic::Node) -> String {
+    format!("__GEDGE_{}_{}", node.span.file.0, node.span.start)
+}
+
+fn graphic_bodies<'a>(body: &'a Body, out: &mut Vec<&'a GraphicBody>) {
+    let sfc = match body {
+        Body::Graphic(g) => {
+            out.push(g);
+            g.sfc.as_deref()
+        }
+        Body::Sfc(s) => Some(s),
+        _ => None,
+    };
+    if let Some(s) = sfc {
+        for t in &s.transitions {
+            if let TransitionCondition::Graphic(g) = &t.condition {
+                out.push(g);
+            }
+        }
+        for a in &s.actions {
+            graphic_bodies(&a.body, out);
+        }
+    }
+}
+
+/// Transition-sensing contacts and coils of all networks of a body.
+pub fn edge_elements(body: &Body) -> Vec<structure_syntax::graphic::Node> {
+    use structure_syntax::graphic::{CoilKind, ContactKind};
+    let mut bodies = Vec::new();
+    graphic_bodies(body, &mut bodies);
+    let mut out = Vec::new();
+    for g in bodies {
+        for n in &g.networks {
+            for node in &n.nodes {
+                let edge = matches!(
+                    node.kind,
+                    NodeKind::Contact { kind: ContactKind::Positive | ContactKind::Negative, .. }
+                        | NodeKind::Coil { kind: CoilKind::Positive | CoilKind::Negative, .. }
+                );
+                if edge {
+                    out.push(node.clone());
+                }
+            }
+        }
+    }
+    out
+}

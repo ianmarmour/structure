@@ -252,14 +252,22 @@ impl<'c, 's> Lowerer<'c, 's> {
             post.push(St::Copy { dst: t.clone(), src: Loc::Nf(res_var.offset() as u32), bits });
             agg_temp = Some(t);
         }
+        let mut outs = Vec::new();
         for (vi, target, negated) in &b.outputs {
             let v = pou.vars[*vi].clone();
             if let Some(t) = target {
                 if self.region == Region::Transition {
                     self.cx.annex_e("2.6.3", "side effects are not allowed in the evaluation of a transition condition", t.span);
                 }
-                self.output_target(&mut post, t, Loc::Nf(v.offset() as u32), v.ty, *negated, span);
+                self.output_target(&mut outs, t, Loc::Nf(v.offset() as u32), v.ty, *negated, span);
             }
+        }
+        // Outputs are not assigned when the function was not executed (EN = FALSE).
+        if b.en.is_some() && !outs.is_empty() {
+            let eno = pou.var("ENO").unwrap().offset();
+            post.push(St::If(Ex::Load(Ty::Bool, Loc::Nf(eno as u32)), outs, vec![]));
+        } else {
+            post.extend(outs);
         }
         if let Some((Some(t), negated)) = b.eno {
             let eno = pou.var("ENO").unwrap().clone();
@@ -667,6 +675,11 @@ impl<'c, 's> Lowerer<'c, 's> {
                 V::val(Ex::Trunc(e.ty(), self.mty(rt), Box::new(ex)), rt)
             }
             StdFn::BcdToInt { from, to } => {
+                if from.is_none() {
+                    self.cx.extension(format!("the generic BCD conversion {} is an extension; use *_BCD_TO_** (table 22 feature 3)", name), span);
+                } else if to.map(|t| t.is_signed_int()).unwrap_or(false) {
+                    self.cx.extension(format!("{}: BCD conversion to a signed integer type is an extension (table 22 footnote d)", name), span);
+                }
                 let Some((v, s)) = self.arg(&mut vals, 0, span) else { return V::err(&self.cx.types) };
                 let v = match from {
                     Some(e) => self.typed_arg(v, Some(e), s),
@@ -680,6 +693,11 @@ impl<'c, 's> Lowerer<'c, 's> {
                 V::val(Ex::Native(Native::BcdToInt { from: fe.ty(), to: te.ty() }, vec![ex]), self.elem_ty(te))
             }
             StdFn::IntToBcd { from, to } => {
+                if to.is_none() {
+                    self.cx.extension(format!("the generic BCD conversion {} is an extension; use **_TO_BCD_* (table 22 feature 4)", name), span);
+                } else if from.map(|t| t.is_signed_int()).unwrap_or(false) {
+                    self.cx.extension(format!("{}: BCD conversion from a signed integer type is an extension (table 22 footnote d)", name), span);
+                }
                 let Some((v, s)) = self.arg(&mut vals, 0, span) else { return V::err(&self.cx.types) };
                 let v = match from {
                     Some(e) => self.typed_arg(v, Some(e), s),
@@ -1262,6 +1280,10 @@ impl<'c, 's> Lowerer<'c, 's> {
                 V::mem(dst, t)
             }
             (ConvTy::Elem(fe), ConvTy::Elem(te)) => {
+                let time = |e: Elem| matches!(e, Elem::Time | Elem::Date | Elem::Tod | Elem::Dt);
+                if (time(fe) || time(te)) && !matches!((fe, te), (Elem::Dt, Elem::Tod) | (Elem::Dt, Elem::Date)) && fe != te {
+                    self.cx.impl_dependent(format!("the effect of conversion from {} to {} is implementation-dependent (table 30 note 5)", fe.name(), te.name()), span);
+                }
                 let ft = self.elem_ty(fe);
                 let x = self.coerce(v, ft, s);
                 match self.elem_conversion(fe, te, x) {

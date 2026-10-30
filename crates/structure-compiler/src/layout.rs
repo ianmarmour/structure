@@ -99,6 +99,9 @@ impl<'s> Ctx<'s> {
                 let ty = self.resolve_spec(&d.spec, false);
                 let inst_pou = self.types.instance_pou(ty);
                 if let Some(fp) = inst_pou {
+                    if matches!(self.pous[fp].name.as_str(), "CTUD_UDINT" | "RTC") && !self.in_std {
+                        self.extension(format!("the function block {} is an extension", self.pous[fp].name), d.spec.span());
+                    }
                     if self.pous[fp].kind == PouKind::Program {
                         self.error_clause("2.5.3", "programs can only be instantiated within resources", d.spec.span());
                     }
@@ -123,6 +126,9 @@ impl<'s> Ctx<'s> {
                         self.error_clause("2.5.2.2", "edge detection can only be applied to BOOL inputs", d.span);
                     }
                     let _ = edge;
+                }
+                if d.init.is_some() && vk == VarKind::Temp {
+                    self.extension("initial values in VAR_TEMP declarations are an extension (B.1.5.2 temp_var_decl)", d.span);
                 }
                 if d.init.is_some() && matches!(vk, VarKind::External | VarKind::InOut) {
                     self.error_clause("2.4.3.2", format!("initial values cannot be given in {} declarations", vk.keyword()), d.span);
@@ -243,6 +249,18 @@ impl<'s> Ctx<'s> {
                 map.insert(vars[m].name.clone(), m);
                 vars[i].edge_result = Some(q);
                 let _ = edge == Edge::Rising;
+            }
+        }
+        // Previous states of transition-sensing contacts and coils.
+        let edges = crate::visit::edge_elements(&ast.body);
+        if !edges.is_empty() && kind == PouKind::Function {
+            self.error_clause("2.5.1", "transition-sensing contacts and coils need state and cannot be used in functions", edges[0].span);
+        }
+        for node in &edges {
+            let name = crate::visit::edge_memory_name(node);
+            if !map.contains_key(&name) {
+                map.insert(name.clone(), vars.len());
+                vars.push(hidden_var(&name, VKind::Hidden, self.types.elem(Elem::Bool), None, node.span));
             }
         }
         // Directly represented variables referenced in the body.

@@ -263,7 +263,7 @@ impl<'c, 's> Lowerer<'c, 's> {
                     if cx.live.contains(&key) {
                         let known = cx.label_types.get(&key).cloned().unwrap_or(Cr::Undef);
                         let t = self.merge(&cr, &known, l.span, cx.final_pass);
-                        cr = self.cr_convert(out, cx, cr, &t, l.span);
+                        let _ = self.cr_convert(out, cx, cr, &t, l.span);
                         cx.label_types.insert(key, t.clone());
                         out.push(St::Label(id));
                         cr = t;
@@ -326,6 +326,9 @@ impl<'c, 's> Lowerer<'c, 's> {
                 self.set_cr(out, cx, &call, hint)
             }
             IlOp::Jump { cond, label } => {
+                if self.region == Region::Transition {
+                    self.cx.annex_e("2.6.3", "jumps are not allowed in the evaluation of a transition condition", span);
+                }
                 let key = label.key();
                 let Some(&id) = cx.labels.get(&key) else {
                     self.cx.error_clause("3.2.1", format!("undefined label {}", label), label.span);
