@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/structure-syntax",
+    "crates/structure-runtime",
+    "crates/structure-compiler",
+    "crates/structure-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/ianmarmour/structure"
+
+[profile.release]
+debug = 1
