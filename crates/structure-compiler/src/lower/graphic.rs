@@ -502,8 +502,29 @@ impl<'c, 's> Lowerer<'c, 's> {
             NodeKind::ConnectorOut(_) | NodeKind::ConnectorIn(_) => {
                 // merged into one net by merge_connectors
             }
-            NodeKind::ActionBlock { action, .. } => {
-                self.cx.error_clause("2.6.4.3", format!("action blocks inside networks ({}) are not supported by this implementation", action), span);
+            NodeKind::ActionBlock { action, indicator, .. } => {
+                // table 44 features 8, 9: the input of the block is an
+                // association of the action (evaluated by the action control)
+                if self.region == Region::Transition {
+                    self.cx.error_clause("2.6.3", "action blocks are not allowed in transition conditions", span);
+                    return;
+                }
+                let pin = power_in(self, vals);
+                if let Some(v) = self.cx.pous[self.pou].var(&crate::visit::action_block_flag_name(node)).cloned() {
+                    out.push(St::Store(Ty::Bool, v.loc(), pin));
+                }
+                // the output is the indicator variable, or the action itself
+                // when it is a Boolean variable, otherwise FALSE (2.6.4.3)
+                let ind = match indicator {
+                    Some(e) => self.bool_expr(e),
+                    None => match self.cx.pous[self.pou].var(&action.key()) {
+                        Some(v) if self.cx.types.is_bool(v.ty) => Ex::Load(Ty::Bool, v.loc()),
+                        _ => Ex::bool(false),
+                    },
+                };
+                if let Some(&ni) = output_net.get(&(idx, 0)) {
+                    self.drive(out, ni, V::val(ind, bool_ty), vals, u, span);
+                }
             }
             NodeKind::Block { type_name, instance, inputs, outputs } => {
                 self.block(out, u, idx, node, type_name, instance.as_ref(), inputs, outputs, input_net, output_net, vals);

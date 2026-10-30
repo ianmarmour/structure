@@ -79,6 +79,9 @@ impl<'s> Ctx<'s> {
             }
         }
         out.push(St::Label(l.return_label));
+        if !matches!(ast.body, Body::Sfc(_)) && !matches!(&ast.body, Body::Graphic(g) if g.sfc.is_some()) {
+            l.network_action_control(&mut out);
+        }
         if kind == PouKind::Function {
             // 3.3.2.1: returning with ENO = TRUE requires an assigned result.
             let eno = l.cx.pous[pi].var("ENO").unwrap().loc();

@@ -280,3 +280,22 @@ pub fn sfc_charts(sfc: &Sfc) -> Vec<&Sfc> {
     }
     out
 }
+
+/// Action blocks used as elements of networks (table 44 features 8, 9).
+pub fn network_action_blocks(body: &Body) -> Vec<structure_syntax::graphic::Node> {
+    let mut bodies = Vec::new();
+    graphic_bodies(body, &mut bodies);
+    bodies
+        .iter()
+        .flat_map(|g| g.networks.iter())
+        .flat_map(|n| n.nodes.iter())
+        .filter(|n| matches!(n.kind, NodeKind::ActionBlock { .. }))
+        .cloned()
+        .collect()
+}
+
+/// Name of the hidden variable holding the input of an action block used
+/// in a network (the state of its association, 2.6.4.5 rule 2).
+pub fn action_block_flag_name(node: &structure_syntax::graphic::Node) -> String {
+    format!("__GACT_{}_{}", node.span.file.0, node.span.start)
+}

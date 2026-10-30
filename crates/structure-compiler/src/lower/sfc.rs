@@ -20,7 +20,9 @@ use super::*;
 use std::collections::{HashMap, HashSet};
 use structure_runtime::error::TrapCode;
 use structure_runtime::image::CmpOp;
+use crate::ctx::SfcActionLayout;
 use structure_syntax::ast::{self, Body, Qualifier, Sfc, TransitionCondition};
+use structure_syntax::graphic::NodeKind;
 
 const QUALIFIER_INPUTS: [(&str, Qualifier); 11] = [
     ("N", Qualifier::N),
@@ -36,8 +38,11 @@ const QUALIFIER_INPUTS: [(&str, Qualifier); 11] = [
     ("SL", Qualifier::SL),
 ];
 
+/// An association of an action with a step or with an action block used
+/// in a network (2.6.4.5 rule 2).
 struct Assoc {
-    step: usize,
+    /// The association is active.
+    active: Ex,
     qualifier: Qualifier,
     time: Option<ast::Expr>,
     span: Span,
@@ -196,73 +201,24 @@ impl<'c, 's> Lowerer<'c, 's> {
         // ---------------------------------------------------------- 2. actions
         let ac = self.cx.pou_by_name["__ACTION_CONTROL"];
         let ac_info = self.cx.pous[ac].clone();
-        let ac_routine = ac_info.routine.unwrap();
         let mut assocs: HashMap<String, Vec<Assoc>> = HashMap::new();
         for s in &sfc.steps {
             let si = step_index[&s.name.key()];
             for a in &s.associations {
                 let q = a.qualifier.unwrap_or(Qualifier::N);
-                if q.is_timed() && a.time.is_none() {
-                    self.cx.error_clause("2.6.4.4", format!("the qualifier {} requires a duration", q.as_str()), a.span);
-                }
-                if !q.is_timed() && a.time.is_some() {
-                    self.cx.error_clause("2.6.4.4", format!("the qualifier {} has no duration", q.as_str()), a.span);
-                }
+                self.check_qualifier(q, a.time.is_some(), a.span);
                 for ind in &a.indicators {
                     let ok = self.cx.pous[self.pou].var(&ind.key()).map(|v| self.cx.types.is_bool(v.ty)).unwrap_or(false);
                     if !ok {
                         self.cx.error_clause("2.6.4.3", format!("the indicator {} shall be a BOOL variable", ind), ind.span);
                     }
                 }
-                assocs.entry(a.action.key()).or_default().push(Assoc { step: si, qualifier: q, time: a.time.clone(), span: a.span });
+                let active = Ex::Load(Ty::Bool, Loc::Ip(layout.steps[si].x as u32));
+                assocs.entry(a.action.key()).or_default().push(Assoc { active, qualifier: q, time: a.time.clone(), span: a.action.span });
             }
         }
-        for a in &layout.actions {
-            let ctrl = Loc::Ip(a.control as u32);
-            let list = assocs.get(&a.name).map(|v| v.as_slice()).unwrap_or(&[]);
-            // inputs of the action control block (rule 2)
-            for (input, q) in QUALIFIER_INPUTS {
-                let mut e = Ex::bool(false);
-                for asc in list.iter().filter(|x| x.qualifier == q) {
-                    let x = Ex::Load(Ty::Bool, Loc::Ip(layout.steps[asc.step].x as u32));
-                    e = match e {
-                        Ex::Const(Ty::Bool, 0) => x,
-                        prev => Ex::or(prev, x),
-                    };
-                }
-                let v = ac_info.var(input).unwrap();
-                out.push(St::Store(Ty::Bool, ctrl.clone().offset(v.offset()), e));
-            }
-            // T input (rule 3) and contention (rule 4 a)
-            let timed: Vec<&Assoc> = list.iter().filter(|x| x.qualifier.is_timed()).collect();
-            let tv = ac_info.var("T").unwrap();
-            let mut t_expr = Ex::Const(time, 0);
-            let tt = self.elem_ty(Elem::Time);
-            for asc in timed.iter().rev() {
-                let Some(te) = &asc.time else { continue };
-                let v = self.expr(te, Some(tt));
-                let d = self.coerce(v, tt, te.span);
-                let x = Ex::Load(Ty::Bool, Loc::Ip(layout.steps[asc.step].x as u32));
-                t_expr = Ex::Select(Box::new(x), Box::new(d), Box::new(t_expr));
-            }
-            out.push(St::Store(time, ctrl.clone().offset(tv.offset()), t_expr));
-            if timed.len() > 1 {
-                let mut count = Ex::Const(Ty::I64, 0);
-                for asc in &timed {
-                    let x = Ex::Conv(Ty::Bool, Ty::I64, Box::new(Ex::Load(Ty::Bool, Loc::Ip(layout.steps[asc.step].x as u32))));
-                    count = Ex::Bin(BinOp::Add, Ty::I64, Box::new(count), Box::new(x));
-                }
-                out.push(St::If(
-                    Ex::Cmp(CmpOp::Gt, Ty::I64, Box::new(count), Box::new(Ex::Const(Ty::I64, 1))),
-                    vec![St::Trap(TrapCode::ActionControlContention)],
-                    vec![],
-                ));
-            }
-            for asc in list {
-                let _ = asc.span;
-            }
-            out.push(St::CallFb { routine: ac_routine, inst: Ex::Addr(ctrl.clone()) });
-        }
+        self.action_block_assocs(&mut assocs, &layout.actions);
+        self.action_control(out, &layout.actions, &assocs);
         // execute actions
         for a in &layout.actions {
             let ctrl = Loc::Ip(a.control as u32);
@@ -302,21 +258,8 @@ impl<'c, 's> Lowerer<'c, 's> {
                 body.push(St::Label(end));
                 out.push(St::If(Ex::Load(Ty::Bool, ctrl.clone().offset(aoff)), body, vec![]));
             } else {
-                // Boolean variable action (table 42 feature 1)
-                let v = self.cx.pous[self.pou].var(&a.name).cloned();
-                match v {
-                    Some(v) if self.cx.types.is_bool(v.ty) && matches!(v.kind, VKind::Local | VKind::Output | VKind::Global) => {
-                        if v.constant {
-                            self.cx.annex_e("2.4.3", format!("{} is declared CONSTANT and cannot be used as an action", v.name), v.span);
-                        }
-                        out.push(St::Store(Ty::Bool, v.loc(), Ex::Load(Ty::Bool, ctrl.clone().offset(qoff))));
-                    }
-                    Some(v) => self.cx.error_clause("2.6.4.1", format!("{} is not a BOOL variable declared in VAR or VAR_OUTPUT and cannot be an action", v.name), v.span),
-                    None => {
-                        let span = sfc.steps.iter().flat_map(|s| s.associations.iter()).find(|x| x.action.key() == a.name).map(|x| x.action.span).unwrap_or(sfc.span);
-                        self.cx.error_clause("2.6.4.1", format!("unknown action {}", a.name), span);
-                    }
-                }
+                let span = assocs.get(&a.name).and_then(|l| l.first()).map(|x| x.span).unwrap_or(sfc.span);
+                self.boolean_action(out, a, span);
             }
         }
 
@@ -470,6 +413,106 @@ impl<'c, 's> Lowerer<'c, 's> {
             }
             // charts included in actions are lowered by sfc_chart
             Body::Sfc(_) => {}
+        }
+    }
+
+    fn check_qualifier(&mut self, q: Qualifier, has_time: bool, span: Span) {
+        if q.is_timed() && !has_time {
+            self.cx.error_clause("2.6.4.4", format!("the qualifier {} requires a duration", q.as_str()), span);
+        }
+        if !q.is_timed() && has_time {
+            self.cx.error_clause("2.6.4.4", format!("the qualifier {} has no duration", q.as_str()), span);
+        }
+    }
+
+    /// Associations of the given actions with the action blocks used in the
+    /// networks of the POU (table 44 features 8, 9): active while the input
+    /// of the block is TRUE.
+    fn action_block_assocs(&mut self, assocs: &mut HashMap<String, Vec<Assoc>>, actions: &[SfcActionLayout]) {
+        for node in crate::visit::network_action_blocks(&self.cx.pous[self.pou].ast.body) {
+            let NodeKind::ActionBlock { qualifier, time, action, .. } = &node.kind else { continue };
+            if !actions.iter().any(|a| a.name == action.key()) {
+                continue;
+            }
+            let Some(flag) = self.cx.pous[self.pou].var(&crate::visit::action_block_flag_name(&node)).map(|v| v.loc()) else { continue };
+            let q = qualifier.unwrap_or(Qualifier::N);
+            self.check_qualifier(q, time.is_some(), node.span);
+            assocs.entry(action.key()).or_default().push(Assoc { active: Ex::Load(Ty::Bool, flag), qualifier: q, time: time.clone(), span: action.span });
+        }
+    }
+
+    /// Evaluates the ACTION_CONTROL block of each action from its
+    /// associations (2.6.4.5 rules 2 to 4).
+    fn action_control(&mut self, out: &mut Vec<St>, actions: &[SfcActionLayout], assocs: &HashMap<String, Vec<Assoc>>) {
+        let time = Ty::I64;
+        let ac = self.cx.pou_by_name["__ACTION_CONTROL"];
+        let ac_info = self.cx.pous[ac].clone();
+        let ac_routine = ac_info.routine.unwrap();
+        for a in actions {
+            let ctrl = Loc::Ip(a.control as u32);
+            let list = assocs.get(&a.name).map(|v| v.as_slice()).unwrap_or(&[]);
+            // inputs of the action control block (rule 2)
+            for (input, q) in QUALIFIER_INPUTS {
+                let e = list.iter().filter(|x| x.qualifier == q).map(|x| x.active.clone()).reduce(Ex::or).unwrap_or(Ex::bool(false));
+                let v = ac_info.var(input).unwrap();
+                out.push(St::Store(Ty::Bool, ctrl.clone().offset(v.offset()), e));
+            }
+            // T input (rule 3) and contention (rule 4 a)
+            let timed: Vec<&Assoc> = list.iter().filter(|x| x.qualifier.is_timed()).collect();
+            let tv = ac_info.var("T").unwrap();
+            let mut t_expr = Ex::Const(time, 0);
+            let tt = self.elem_ty(Elem::Time);
+            for asc in timed.iter().rev() {
+                let Some(te) = &asc.time else { continue };
+                let v = self.expr(te, Some(tt));
+                let d = self.coerce(v, tt, te.span);
+                t_expr = Ex::Select(Box::new(asc.active.clone()), Box::new(d), Box::new(t_expr));
+            }
+            out.push(St::Store(time, ctrl.clone().offset(tv.offset()), t_expr));
+            if timed.len() > 1 {
+                let mut count = Ex::Const(Ty::I64, 0);
+                for asc in &timed {
+                    let x = Ex::Conv(Ty::Bool, Ty::I64, Box::new(asc.active.clone()));
+                    count = Ex::Bin(BinOp::Add, Ty::I64, Box::new(count), Box::new(x));
+                }
+                out.push(St::If(
+                    Ex::Cmp(CmpOp::Gt, Ty::I64, Box::new(count), Box::new(Ex::Const(Ty::I64, 1))),
+                    vec![St::Trap(TrapCode::ActionControlContention)],
+                    vec![],
+                ));
+            }
+            out.push(St::CallFb { routine: ac_routine, inst: Ex::Addr(ctrl.clone()) });
+        }
+    }
+
+    /// A Boolean variable action (table 42 feature 1) takes the value of
+    /// the Q output of its action control.
+    fn boolean_action(&mut self, out: &mut Vec<St>, a: &SfcActionLayout, span: Span) {
+        let ac = self.cx.pou_by_name["__ACTION_CONTROL"];
+        let qoff = self.cx.pous[ac].var("Q").unwrap().offset();
+        let v = self.cx.pous[self.pou].var(&a.name).cloned();
+        match v {
+            Some(v) if self.cx.types.is_bool(v.ty) && matches!(v.kind, VKind::Local | VKind::Output | VKind::Global) => {
+                if v.constant {
+                    self.cx.annex_e("2.4.3", format!("{} is declared CONSTANT and cannot be used as an action", v.name), v.span);
+                }
+                out.push(St::Store(Ty::Bool, v.loc(), Ex::Load(Ty::Bool, Loc::Ip(a.control as u32).offset(qoff))));
+            }
+            Some(v) => self.cx.error_clause("2.6.4.1", format!("{} is not a BOOL variable declared in VAR or VAR_OUTPUT and cannot be an action", v.name), v.span),
+            None => self.cx.error_clause("2.6.4.1", format!("unknown action {}", a.name), span),
+        }
+    }
+
+    /// Action control in a POU without SFC whose networks contain action
+    /// blocks; evaluated after the networks, for Boolean variable actions.
+    pub fn network_action_control(&mut self, out: &mut Vec<St>) {
+        let Some(layout) = self.cx.pous[self.pou].sfc.clone() else { return };
+        let mut assocs = HashMap::new();
+        self.action_block_assocs(&mut assocs, &layout.actions);
+        self.action_control(out, &layout.actions, &assocs);
+        for a in &layout.actions {
+            let span = assocs.get(&a.name).and_then(|l| l.first()).map(|x| x.span).unwrap_or(self.cx.pous[self.pou].ast.name.span);
+            self.boolean_action(out, a, span);
         }
     }
 

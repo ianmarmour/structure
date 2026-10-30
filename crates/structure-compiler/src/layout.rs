@@ -263,6 +263,18 @@ impl<'s> Ctx<'s> {
                 vars.push(hidden_var(&name, VKind::Hidden, self.types.elem(Elem::Bool), None, node.span));
             }
         }
+        // Inputs of action blocks used in networks (table 44 features 8, 9).
+        let action_blocks = crate::visit::network_action_blocks(&ast.body);
+        if !action_blocks.is_empty() && kind == PouKind::Function {
+            self.error_clause("2.6.4.3", "action blocks need state and cannot be used in functions", action_blocks[0].span);
+        }
+        for node in &action_blocks {
+            let name = crate::visit::action_block_flag_name(node);
+            if !map.contains_key(&name) {
+                map.insert(name.clone(), vars.len());
+                vars.push(hidden_var(&name, VKind::Hidden, self.types.elem(Elem::Bool), None, node.span));
+            }
+        }
         // Directly represented variables referenced in the body.
         if kind != PouKind::Function {
             for dv in crate::visit::direct_vars(&ast.body) {
@@ -318,6 +330,13 @@ impl<'s> Ctx<'s> {
                     if !sfc_actions.contains(&a.name.key()) {
                         sfc_actions.push(a.name.key());
                     }
+                }
+            }
+        }
+        for node in &action_blocks {
+            if let structure_syntax::graphic::NodeKind::ActionBlock { action, .. } = &node.kind {
+                if !sfc_actions.contains(&action.key()) {
+                    sfc_actions.push(action.key());
                 }
             }
         }
@@ -379,7 +398,7 @@ impl<'s> Ctx<'s> {
         }
         // SFC state after all variables.
         let mut sfc_layout = None;
-        if sfc.is_some() && !is_fn {
+        if (sfc.is_some() || !action_blocks.is_empty()) && !is_fn {
             let mut layout = SfcLayout::default();
             for (name, initial, nested) in &sfc_steps {
                 off = round8(off);
