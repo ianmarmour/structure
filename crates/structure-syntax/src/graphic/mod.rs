@@ -95,9 +95,13 @@ pub enum NodeKind {
 }
 
 /// Pin reference: (node index, pin index). For blocks, input pins are
-/// numbered from 0 and output pins likewise in a separate numbering. Contacts
-/// and coils have input 0 (left) and output 0 (right). Sources have output 0,
-/// sinks and jumps input 0. Rails use the row number as pin index.
+/// numbered from 0 top to bottom on the left side and output pins likewise
+/// on the right side (EN/ENO are ordinary pins). Contacts, coils and action
+/// blocks have input 0 (left) and output 0 (right). Sources and connector
+/// continuations have output 0; sinks, jumps, returns and connectors have
+/// input 0. A variable written between two lines (`--PTR--`) is a sink that
+/// also has output 0, which carries the value just assigned. The left rail
+/// has output 0 and the right rail input 0, each possibly in several nets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PinRef {
     pub node: usize,

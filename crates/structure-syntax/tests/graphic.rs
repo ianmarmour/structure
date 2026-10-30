@@ -1329,3 +1329,40 @@ fn errors_are_reported_not_panics() {
     let p = parse_src(&pou("PROGRAM", "VAR a : BOOL; END_VAR", "\n|  a\n+---|\n|    xyz\n"));
     assert!(!p.errors.is_empty());
 }
+
+#[test]
+fn action_block_fields_are_one_element() {
+    let p = parse_src(&pou(
+        "PROGRAM",
+        "VAR S8, IN1, OK1, DN1 : BOOL; END_VAR",
+        r#"
+|  S8    IN1      +---+------+---+      OK1    |
++--| |---| |------| N | ACT1 |DN1|------( )----+
+|                 +---+------+---+             |
+"#,
+    ))
+    .ok();
+    let nw = &p.graphic().networks[0];
+    let mut nodes = p.nodes(nw);
+    nodes.sort();
+    assert_eq!(nodes, ["Action(N ACT1)", "Coil(OK1)", "LeftRail", "NO(IN1)", "NO(S8)", "RightRail"]);
+    assert_nets!(p, nw, ["LeftRail -> NO(S8)", "NO(S8) -> NO(IN1)", "NO(IN1) -> Action(N ACT1)", "Action(N ACT1) -> Coil(OK1)", "Coil(OK1) -> RightRail"]);
+    let p = parse_src(&pou(
+        "PROGRAM",
+        "VAR S8, IN2, OK2 : BOOL; END_VAR",
+        r#"
+           +---+     +-------+------+
+S8---------| & |-----| L     | ACT2 |---OK2
+IN2--------|   |     |T#30ms |      |
+           +---+     +-------+------+
+"#,
+    ))
+    .ok();
+    let nw = &p.graphic().networks[0];
+    let mut nodes = p.nodes(nw);
+    nodes.sort();
+    assert_eq!(nodes, ["&", "Action(L ACT2)", "Src(IN2)", "Src(S8)", "Var(OK2)"]);
+    let NodeKind::ActionBlock { time, indicator, .. } = &nw.nodes.iter().find(|n| matches!(n.kind, NodeKind::ActionBlock { .. })).unwrap().kind else { panic!() };
+    assert_eq!(p.text(time.as_ref().unwrap()), "T#30ms");
+    assert!(indicator.is_none());
+}
