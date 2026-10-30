@@ -723,6 +723,9 @@ pub fn resolve_path(image: &Image, mem: &Memory, path: &str) -> Result<(u64, Typ
             ty = *inner;
         }
         if !pending_idx.is_empty() {
+            while let TypeDesc::Derived { base, .. } = ty {
+                ty = *base;
+            }
             match ty {
                 TypeDesc::Array { dims, elem, stride } => {
                     if dims.len() != pending_idx.len() {

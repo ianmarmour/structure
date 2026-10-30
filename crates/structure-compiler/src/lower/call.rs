@@ -498,7 +498,10 @@ impl<'c, 's> Lowerer<'c, 's> {
             }));
         }
         let mut pre = Vec::new();
+        let saved_hint = self.lit_hint;
+        self.lit_hint = hint.filter(|t| self.cx.types.scalar(*t).is_some());
         let value = self.std_body(name, f, vals, expected, span, &mut pre);
+        self.lit_hint = saved_hint;
         if en.is_none() && eno.is_none() {
             let mut v = value;
             let mut p = pre;
@@ -515,7 +518,13 @@ impl<'c, 's> Lowerer<'c, 's> {
         let ty = value.ty;
         let mut body = pre;
         let (res_loc, rt) = if self.cx.types.scalar(ty).is_some() || value.is_literal() {
-            let value = self.settle(value, span);
+            let value = match (value.is_literal(), expected) {
+                (true, Some(t)) if self.cx.types.elem_of(t).map(|e| e.is_num() || e.is_bit()).unwrap_or(false) => {
+                    let ex = self.coerce(value, t, span);
+                    V::val(ex, self.base_elem_ty(t))
+                }
+                _ => self.settle(value, span),
+            };
             let rt = value.ty;
             let mt = self.mty(rt);
             let loc = self.temp_typed(rt);

@@ -671,6 +671,18 @@ impl<'c, 's> Lowerer<'c, 's> {
         }
         match (a.is_literal(), b.is_literal()) {
             (true, true) => {
+                if let Some(h) = self.lit_hint {
+                    let is_real = matches!(a.kind, VK::RealLit(_)) || matches!(b.kind, VK::RealLit(_));
+                    let ok = match self.cx.types.elem_of(h) {
+                        Some(e) if is_real => e.is_real(),
+                        Some(e) => e.is_num() || e.is_bit(),
+                        None => false,
+                    };
+                    if ok {
+                        let t = self.base_elem_ty(h);
+                        return Some((a, b, t));
+                    }
+                }
                 let t = if matches!(a.kind, VK::RealLit(_)) || matches!(b.kind, VK::RealLit(_)) {
                     self.elem_ty(Elem::LReal)
                 } else {
