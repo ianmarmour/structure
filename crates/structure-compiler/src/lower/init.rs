@@ -25,7 +25,8 @@ pub fn needs_init(cx: &Ctx, ty: TypeId) -> bool {
 
 pub fn instance_needs_init(cx: &Ctx, pou: usize) -> bool {
     let p = &cx.pous[pou];
-    if p.sfc.as_ref().map(|s| !s.steps.is_empty()).unwrap_or(false) {
+    // step flags of initial steps, and the action control blocks
+    if p.sfc.as_ref().map(|s| !s.steps.is_empty() || !s.actions.is_empty()).unwrap_or(false) {
         return true;
     }
     p.vars.iter().any(|v| {

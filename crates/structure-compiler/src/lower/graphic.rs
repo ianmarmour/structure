@@ -79,13 +79,7 @@ impl<'c, 's> Lowerer<'c, 's> {
             if let Some(l) = &u.label {
                 out.push(St::Label(labels[&l.key()]));
             }
-            let start = out.len();
             self.network(out, u, &labels, None);
-            if std::env::var("DBG_GRAPHIC").is_ok() {
-                for (i, n) in u.nodes.iter().enumerate() { eprintln!("NODE {} {:?} pos={:?}", i, n.kind, n.pos); }
-                for n in &u.nets { eprintln!("NET {:?} -> {:?}", n.drivers.iter().map(|p| (p.node, p.pin)).collect::<Vec<_>>(), n.sinks.iter().map(|p| (p.node, p.pin)).collect::<Vec<_>>()); }
-                for st in &out[start..] { eprintln!("ST {:?}", st); }
-            }
         }
     }
 
@@ -821,7 +815,6 @@ impl<'c, 's> Lowerer<'c, 's> {
                 _ => None,
             })
         });
-        if std::env::var("DBG_GRAPHIC").is_ok() { eprintln!("CALL {}", structure_syntax::writer::expr_text(&call)); }
         let v = self.expr(&call, expected);
         match result_pin.and_then(|k| output_net.get(&(idx, k)).map(|ni| (k, *ni))) {
             Some((k, ni)) => {
