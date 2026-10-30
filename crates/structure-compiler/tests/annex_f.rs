@@ -500,3 +500,130 @@ CONFIGURATION C RESOURCE R ON VM TASK T(INTERVAL := T#10ms, PRIORITY := 1); PROG
     assert!(boolean(&rt, "R.P1.A") && boolean(&rt, "R.P1.H") && !boolean(&rt, "R.P1.L"));
     assert!(!boolean(&rt, "R.P1.B"));
 }
+
+#[test]
+fn f4_stack_int_st() {
+    let src = r#"
+FUNCTION_BLOCK STACK_INT
+VAR_INPUT PUSH, POP: BOOL R_EDGE; (* Basic stack operations *)
+  R1 : BOOL ; (* Over-riding reset *)
+  IN : INT ; (* Input to be pushed *)
+  N : INT ; (* Maximum depth after reset *)
+END_VAR
+VAR_OUTPUT EMPTY : BOOL := 1 ; (* Stack empty *)
+  OFLO : BOOL := 0 ; (* Stack overflow *)
+  OUT : INT := 0 ; (* Top of stack data *)
+END_VAR
+VAR STK : ARRAY[0..127] OF INT; (* Internal stack *)
+  NI : INT :=128 ; (* Storage for N upon reset *)
+  PTR : INT := -1 ; (* Stack pointer *)
+END_VAR
+IF R1 THEN
+  OFLO := 0; EMPTY := 1; PTR := -1;
+  NI := LIMIT (MN:=1,IN:=N,MX:=128); OUT := 0;
+ELSIF POP & NOT EMPTY THEN
+  OFLO := 0; PTR := PTR-1; EMPTY := PTR < 0;
+  IF EMPTY THEN OUT := 0;
+  ELSE OUT := STK[PTR];
+  END_IF ;
+ELSIF PUSH & NOT OFLO THEN
+  EMPTY := 0; PTR := PTR+1; OFLO := (PTR = NI);
+  IF NOT OFLO THEN OUT := IN ; STK[PTR] := IN;
+  ELSE OUT := 0;
+  END_IF ;
+END_IF ;
+END_FUNCTION_BLOCK
+PROGRAM P
+VAR S : STACK_INT; PUSH, POP, R1 : BOOL; IN : INT; OUT : INT; EMPTY, OFLO : BOOL; END_VAR
+S(PUSH := PUSH, POP := POP, R1 := R1, IN := IN, N := 2);
+OUT := S.OUT; EMPTY := S.EMPTY; OFLO := S.OFLO;
+END_PROGRAM
+CONFIGURATION C RESOURCE R ON VM TASK T(INTERVAL := T#10ms, PRIORITY := 1); PROGRAM P1 WITH T : P; END_RESOURCE END_CONFIGURATION
+"#;
+    let mut rt = build(src);
+    let set = |rt: &mut structure_runtime::Runtime, k: &str, v: Value| rt.write(&format!("R.P1.{}", k), &v).unwrap();
+    set(&mut rt, "R1", Value::Bool(true));
+    rt.run_for(10_000);
+    set(&mut rt, "R1", Value::Bool(false));
+    for v in [10, 20, 30] {
+        set(&mut rt, "IN", Value::Int(v));
+        set(&mut rt, "PUSH", Value::Bool(true));
+        rt.run_for(10_000);
+        set(&mut rt, "PUSH", Value::Bool(false));
+        rt.run_for(10_000);
+    }
+    // N = 2: the third push overflows (the pointer moves past the top)
+    assert!(boolean(&rt, "R.P1.OFLO"));
+    assert_eq!(int(&rt, "R.P1.OUT"), 0);
+    for expected in [20, 10] {
+        set(&mut rt, "POP", Value::Bool(true));
+        rt.run_for(10_000);
+        assert_eq!(int(&rt, "R.P1.OUT"), expected);
+        assert!(!boolean(&rt, "R.P1.OFLO") && !boolean(&rt, "R.P1.EMPTY"));
+        set(&mut rt, "POP", Value::Bool(false));
+        rt.run_for(10_000);
+    }
+    set(&mut rt, "POP", Value::Bool(true));
+    rt.run_for(10_000);
+    assert!(boolean(&rt, "R.P1.EMPTY"));
+    assert_eq!(int(&rt, "R.P1.OUT"), 0);
+}
+
+#[test]
+fn f9_enumerated_types_in_st_and_il() {
+    let src = r#"
+TYPE SPEED: (SLOW, MEDIUM, FAST, VERY_FAST); END_TYPE
+FUNCTION_BLOCK GOVERNOR
+VAR_INPUT MOTOR_SPEED: SPEED; END_VAR
+VAR_OUTPUT SPEED_OUT: SPEED; CHANGE : INT; END_VAR
+CASE MOTOR_SPEED OF
+SLOW: CHANGE := 1; (* speed it up *)
+MEDIUM: CHANGE := 0; (* hold the current speed *)
+FAST: CHANGE := -1; (* slow it down *)
+ELSE CHANGE := -2; (* take special care *)
+END_CASE;
+SPEED_OUT := MOTOR_SPEED;
+END_FUNCTION_BLOCK
+FUNCTION_BLOCK RESET_SPEED
+VAR_OUTPUT SPEED_OUT: SPEED; END_VAR
+LD SPEED#SLOW (* enumerated value qualified by data type *)
+ST SPEED_OUT
+END_FUNCTION_BLOCK
+PROGRAM P
+VAR G : GOVERNOR; RSP : RESET_SPEED; A1, A2 : INT; S : SPEED := VERY_FAST; END_VAR
+G(MOTOR_SPEED := FAST); A1 := G.CHANGE;
+G(MOTOR_SPEED := S); A2 := G.CHANGE;
+RSP(); S := RSP.SPEED_OUT;
+END_PROGRAM
+CONFIGURATION C RESOURCE R ON VM TASK T(INTERVAL := T#10ms, PRIORITY := 1); PROGRAM P1 WITH T : P; END_RESOURCE END_CONFIGURATION
+"#;
+    let mut rt = build(src);
+    rt.run_for(5_000);
+    assert_eq!(int(&rt, "R.P1.A1"), -1);
+    assert_eq!(int(&rt, "R.P1.A2"), -2);
+    assert_eq!(rt.read("R.P1.S").unwrap().to_string(), "SLOW");
+}
+
+#[test]
+fn f10_real_time_clock() {
+    let src = r#"
+PROGRAM P
+VAR CLOCK : RTC; RUN : BOOL; NOW : DT; VALID : BOOL; END_VAR
+CLOCK(IN := RUN, PDT := DT#2003-01-15-08:00:00);
+NOW := CLOCK.CDT; VALID := CLOCK.Q;
+END_PROGRAM
+CONFIGURATION C RESOURCE R ON VM TASK T(INTERVAL := T#10ms, PRIORITY := 1); PROGRAM P1 WITH T : P; END_RESOURCE END_CONFIGURATION
+"#;
+    let (sm, out) = structure_compiler::compile_str("rtc.st", src, structure_compiler::Mode::Build);
+    assert!(out.diagnostics.render(&sm).contains("RTC"), "RTC use is reported as an extension");
+    let mut rt = structure_runtime::Runtime::new(out.image.unwrap(), structure_runtime::Options::default());
+    rt.cold_start().unwrap();
+    rt.run_for(5_000);
+    assert!(!boolean(&rt, "R.P1.VALID"));
+    rt.write("R.P1.RUN", &Value::Bool(true)).unwrap();
+    rt.run_for(10_000);
+    assert_eq!(rt.read("R.P1.NOW").unwrap().to_string(), "DT#2003-01-15-08:00:00");
+    rt.run_for(1_000_000);
+    let now = rt.read("R.P1.NOW").unwrap().to_string();
+    assert!(now.starts_with("DT#2003-01-15-08:00:01"), "{}", now);
+}
