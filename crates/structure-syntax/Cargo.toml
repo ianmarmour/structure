@@ -1,0 +1,8 @@
+[package]
+name = "structure-syntax"
+description = "Lexer, parser and syntax tree for IEC 61131-3 (2003) languages"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

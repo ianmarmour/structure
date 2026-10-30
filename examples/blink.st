@@ -1,0 +1,10 @@
+(* A blinking lamp using two timers and a counter. *)
+PROGRAM BLINK
+VAR_OUTPUT LAMP : BOOL; COUNT : INT; END_VAR
+VAR ON_TMR, OFF_TMR : TON; EDGE : R_TRIG; END_VAR
+ON_TMR(IN := NOT OFF_TMR.Q, PT := T#200ms);
+OFF_TMR(IN := ON_TMR.Q, PT := T#200ms);
+LAMP := NOT ON_TMR.Q;
+EDGE(CLK := LAMP);
+IF EDGE.Q THEN COUNT := COUNT + 1; END_IF;
+END_PROGRAM
