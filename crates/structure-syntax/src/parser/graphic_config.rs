@@ -137,8 +137,8 @@ impl<'a> Parser<'a> {
         let at = |r: usize, c: usize| rows.get(r).map(|row| row.at(c)).unwrap_or(' ');
         // find the boxes
         let mut boxes: Vec<DrawnBox> = Vec::new();
-        for r in 0..rows.len() {
-            for c in 0..rows[r].chars.len() {
+        for (r, row) in rows.iter().enumerate() {
+            for c in 0..row.chars.len() {
                 if at(r, c) != '+' || at(r, c + 1) != '-' || at(r + 1, c) != '|' || boxes.iter().any(|b| b.on_border(r, c)) {
                     continue;
                 }
@@ -268,16 +268,16 @@ impl<'a> Parser<'a> {
 
     /// The first word inside a compartment, outside nested boxes.
     fn first_text(&self, rows: &[Row], b: &DrawnBox, (r0, r1): (usize, usize), inner: &[&DrawnBox]) -> (Option<Ident>, usize) {
-        for r in r0..r1 {
-            for (w0, w1) in rows[r].words(b.l + 1, b.r) {
+        for (r, row) in rows.iter().enumerate().take(r1).skip(r0) {
+            for (w0, w1) in row.words(b.l + 1, b.r) {
                 if inner.iter().any(|i| r >= i.top.saturating_sub(1) && r <= i.bottom && w1 > i.l && w0 <= i.r) {
                     continue;
                 }
                 // pins with connections are not the type name
-                if (w0 == b.l + 1 && rows[r].at(b.l.wrapping_sub(1)) == '-') || (w1 == b.r && rows[r].at(b.r + 1) == '-') {
+                if (w0 == b.l + 1 && row.at(b.l.wrapping_sub(1)) == '-') || (w1 == b.r && row.at(b.r + 1) == '-') {
                     continue;
                 }
-                return (Some(Ident::new(rows[r].text(w0, w1), self.row_span(&rows[r], w0, w1))), r);
+                return (Some(Ident::new(row.text(w0, w1), self.row_span(row, w0, w1))), r);
             }
         }
         (None, r0)
