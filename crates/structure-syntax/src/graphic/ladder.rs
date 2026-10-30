@@ -22,13 +22,17 @@ pub fn has_left_rail(grid: &Grid) -> bool {
     s.find_text();
     s.mark_lines();
     let ld_symbols = s.elems.iter().any(|e| matches!(e.kind, ElemKind::Contact(_) | ElemKind::Coil(_)));
+    // the left rail is the leftmost element of the drawing
+    let cmin = (0..s.h)
+        .filter_map(|r| (0..grid.rows[r].len()).find(|&c| grid.at(r, c) != ' ' && s.cellu(r, c) != Cell::Used))
+        .min()
+        .unwrap_or(0);
     for (c, r0, r1) in s.vertical_segments() {
-        let (l, r) = s.seg_attachments(c, r0, r1);
-        if r.is_empty() || !l.is_empty() {
+        if c != cmin {
             continue;
         }
-        let nothing_left = (r0..=r1).all(|rr| (0..c).all(|cc| grid.at(rr, cc) == ' ' || s.cellu(rr, cc) == Cell::Used));
-        if !nothing_left {
+        let (l, r) = s.seg_attachments(c, r0, r1);
+        if r.is_empty() || !l.is_empty() {
             continue;
         }
         if grid.at(r0, c) == '|' || grid.at(r1, c) == '|' || ld_symbols {

@@ -362,7 +362,16 @@ impl<'g> Scene<'g> {
                 out.push(BoxRect { r0: r, c0: c, r1, c1, double, double_bar, dividers });
             }
         }
-        let keep: Vec<bool> = (0..out.len()).map(|i| !out.iter().enumerate().any(|(j, o)| j != i && o.encloses(&out[i]))).collect();
+        // drop boxes drawn inside other boxes, and the parts of action
+        // blocks starting at a divider
+        let keep: Vec<bool> = (0..out.len())
+            .map(|i| {
+                let b = &out[i];
+                !out.iter().enumerate().any(|(j, o)| {
+                    j != i && (o.encloses(b) || (o.r0 == b.r0 && o.r1 == b.r1 && o.c0 < b.c0 && b.c1 <= o.c1))
+                })
+            })
+            .collect();
         let mut boxes = Vec::new();
         for (b, k) in out.into_iter().zip(keep) {
             if k {
@@ -679,13 +688,23 @@ impl<'g> Scene<'g> {
         }
     }
 
-    /// Vertical runs of `|`/`+` line cells: (column, first row, last row).
+    /// Vertical runs of `|`/`+` line cells, passing through crossings
+    /// drawn with `-`: (column, first row, last row).
     pub fn vertical_segments(&self) -> Vec<(usize, usize, usize)> {
         let mut out = Vec::new();
         for c in 0..self.w {
             let mut r = 0;
             while r < self.h {
-                let vert = |s: &Self, r: usize| s.cellu(r, c) == Cell::Line && matches!(s.chu(r, c), '|' | '+');
+                let vert = |s: &Self, r: usize| {
+                    s.cellu(r, c) == Cell::Line
+                        && (matches!(s.chu(r, c), '|' | '+')
+                            || (s.chu(r, c) == '-'
+                                && r > 0
+                                && s.cellu(r - 1, c) == Cell::Line
+                                && matches!(s.chu(r - 1, c), '|' | '+')
+                                && s.cellu(r + 1, c) == Cell::Line
+                                && matches!(s.chu(r + 1, c), '|' | '+')))
+                };
                 if vert(self, r) {
                     let r0 = r;
                     while r < self.h && vert(self, r) {
@@ -710,7 +729,7 @@ impl<'g> Scene<'g> {
             let ci = c as isize;
             let l = self.h_line(ri, ci - 1) || self.j_line(ri, ci - 1) || matches!(self.cell(ri, ci - 1), Cell::Elem(_));
             let rt = self.h_line(ri, ci + 1) || self.j_line(ri, ci + 1) || matches!(self.cell(ri, ci + 1), Cell::Elem(_));
-            if self.chu(r, c) == '|' && l && rt {
+            if (self.chu(r, c) == '|' && l && rt) || self.chu(r, c) == '-' {
                 continue; // crossing without connection
             }
             if l {
@@ -727,7 +746,9 @@ impl<'g> Scene<'g> {
     pub fn make_rail(&mut self, c: usize, r0: usize, r1: usize, left: bool) -> usize {
         let i = self.rails.len();
         for r in r0..=r1 {
-            self.set(r, c, Cell::Rail(i as u32));
+            if self.chu(r, c) != '-' {
+                self.set(r, c, Cell::Rail(i as u32));
+            }
         }
         self.rails.push(RailSeg { col: c, r0, r1, left });
         i

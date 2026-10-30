@@ -966,3 +966,366 @@ X:
     );
     assert_eq!(g.networks[4].label.as_ref().unwrap().text, "X");
 }
+
+// ---------------------------------------------------------------- block features
+
+fn block<'a>(nw: &'a Network, ty: &str) -> &'a Node {
+    nw.nodes.iter().find(|n| matches!(&n.kind, NodeKind::Block { type_name, .. } if type_name.text == ty)).unwrap_or_else(|| panic!("no block {}", ty))
+}
+
+fn pins(n: &Node) -> (Vec<(Option<String>, bool, Option<Edge>)>, Vec<(Option<String>, bool, Option<Edge>)>) {
+    let NodeKind::Block { inputs, outputs, .. } = &n.kind else { panic!("not a block") };
+    let f = |v: &Vec<structure_syntax::graphic::BlockPin>| v.iter().map(|p| (p.name.as_ref().map(|n| n.text.clone()), p.negated, p.edge)).collect();
+    (f(inputs), f(outputs))
+}
+
+#[test]
+fn negation_table_19_and_figure_5() {
+    let p = parse_src(&pou(
+        "PROGRAM",
+        "VAR A, B, C, D, ENABLE, NO_ERR, X : INT; END_VAR",
+        r#"
+    +-----+
+    | ADD |
+B---|     |---A
+C---|     |
+D---|     |
+    +-----+
+
+    +-----+
+    | SHL |
+B---|IN   |---A
+C---|N    |
+    +-----+
+
+         +---------+
+         |   SHL   |
+ENABLE---|EN    ENO|O---NO_ERR
+     B---|IN       |---A
+     C---|N        |
+         +---------+
+
+    +-----+
+    | INC |
+    |     |---A
+X---|V---V|---X
+    +-----+
+"#,
+    ))
+    .ok();
+    let g = p.graphic();
+    let n = &g.networks;
+    assert_nets!(p, &n[0], ["Src(B) -> ADD.in0", "Src(C) -> ADD.in1", "Src(D) -> ADD.in2", "ADD.out0 -> Var(A)"]);
+    assert_nets!(p, &n[1], ["Src(B) -> SHL.IN", "Src(C) -> SHL.N", "SHL.out0 -> Var(A)"]);
+    assert_nets!(p, &n[2], ["Src(ENABLE) -> SHL.EN", "Src(B) -> SHL.IN", "Src(C) -> SHL.N", "SHL.!ENO -> Var(NO_ERR)", "SHL.out1 -> Var(A)"]);
+    let (i, o) = pins(block(&n[2], "SHL"));
+    assert_eq!(i, vec![(Some("EN".into()), false, None), (Some("IN".into()), false, None), (Some("N".into()), false, None)]);
+    assert_eq!(o, vec![(Some("ENO".into()), true, None), (None, false, None)]);
+    assert_nets!(p, &n[3], ["Src(X) -> INC.V", "INC.out0 -> Var(A)", "INC.V -> Var(X)"]);
+    let (i, o) = pins(block(&n[3], "INC"));
+    assert_eq!(i, vec![(Some("V".into()), false, None)]);
+    assert_eq!(o, vec![(None, false, None), (Some("V".into()), false, None)]);
+}
+
+#[test]
+fn negated_inputs_and_outputs() {
+    let p = parse_src(&pou(
+        "PROGRAM",
+        "VAR A, B, C, D : BOOL; END_VAR",
+        r#"
+     +---+
+A---O| & |---B
+C----|   |O--D
+     +---+
+"#,
+    ))
+    .ok();
+    let nw = &p.graphic().networks[0];
+    assert_nets!(p, nw, ["Src(A) -> &.!in0", "Src(C) -> &.in1", "&.out0 -> Var(B)", "&.!out1 -> Var(D)"]);
+}
+
+#[test]
+fn en_eno_table_20() {
+    let p = parse_src(&pou(
+        "PROGRAM",
+        "VAR A, B, C, ADD_EN, ADD_OK : INT; END_VAR",
+        r#"
+|          +-------+          |
+| ADD_EN   |  ADD  |  ADD_OK  |
++---| |----|EN  ENO|---( )----+
+|          |       |          |
+|     A----|       |----C     |
+|     B----|       |          |
+|          +-------+          |
+"#,
+    ))
+    .ok();
+    let g = p.graphic();
+    assert_eq!(g.language, GraphicLanguage::Ld);
+    assert_nets!(
+        p,
+        &g.networks[0],
+        ["LeftRail -> NO(ADD_EN)", "NO(ADD_EN) -> ADD.EN", "ADD.ENO -> Coil(ADD_OK)", "Coil(ADD_OK) -> RightRail", "Src(A) -> ADD.in1", "Src(B) -> ADD.in2", "ADD.out1 -> Var(C)"]
+    );
+    // features 2, 3, 4: operator symbol in a pin row, EN only, ENO only
+    let p = parse_src(&pou(
+        "PROGRAM",
+        "VAR A, B, C, ADD_EN, ADD_OK : INT; END_VAR",
+        r#"
+    +-----+
+A---|  +  |---C
+B---|     |
+    +-----+
+
+         +-----+
+ADD_EN---|EN   |
+     A---|  +  |---C
+     B---|     |
+         +-----+
+
+    +-----+
+    |  ENO|---ADD_OK
+A---|  +  |---C
+B---|     |
+    +-----+
+"#,
+    ))
+    .ok();
+    let n = &p.graphic().networks;
+    assert_eq!(n.len(), 3);
+    assert_nets!(p, &n[0], ["Src(A) -> +.in0", "Src(B) -> +.in1", "+.out0 -> Var(C)"]);
+    assert_nets!(p, &n[1], ["Src(ADD_EN) -> +.EN", "Src(A) -> +.in1", "Src(B) -> +.in2", "+.out0 -> Var(C)"]);
+    assert_nets!(p, &n[2], ["Src(A) -> +.in0", "Src(B) -> +.in1", "+.ENO -> Var(ADD_OK)", "+.out1 -> Var(C)"]);
+}
+
+#[test]
+fn edge_inputs_and_timer_symbols() {
+    let p = parse_src(&pou(
+        "PROGRAM",
+        "VAR PUSH, POP, R1, E, O, X, Y, Q1, Q2 : BOOL; IN, N, OUT : INT; T1 : TIME; S : STACK_INT; TM1, TM2 : TON; END_VAR",
+        r#"
+             S
+       +-----------+
+       | STACK_INT |
+PUSH--->PUSH  EMPTY|---E
+POP---->POP    OFLO|---O
+R1-----|R1      OUT|---OUT
+IN-----|IN         |
+N------|N          |
+       +-----------+
+
+       TM1
+    +-------+
+X---|IN    Q|---Q1
+T1--|PT     |
+    | T---0 |
+    +-------+
+
+       TM2
+    +-------+
+    | 0---T |
+Y---<IN    Q|---Q2
+T1--|PT     |
+    +-------+
+"#,
+    ))
+    .ok();
+    let n = &p.graphic().networks;
+    assert_eq!(n.len(), 3);
+    let (i, o) = pins(block(&n[0], "STACK_INT"));
+    assert_eq!(i[0], (Some("PUSH".into()), false, Some(Edge::Rising)));
+    assert_eq!(i[1], (Some("POP".into()), false, Some(Edge::Rising)));
+    assert_eq!(i[2], (Some("R1".into()), false, None));
+    assert_eq!(o.len(), 3);
+    assert_nets!(
+        p,
+        &n[0],
+        [
+            "Src(PUSH) -> S:STACK_INT.PUSH",
+            "Src(POP) -> S:STACK_INT.POP",
+            "Src(R1) -> S:STACK_INT.R1",
+            "Src(IN) -> S:STACK_INT.IN",
+            "Src(N) -> S:STACK_INT.N",
+            "S:STACK_INT.EMPTY -> Var(E)",
+            "S:STACK_INT.OFLO -> Var(O)",
+            "S:STACK_INT.OUT -> Var(OUT)"
+        ]
+    );
+    assert_nets!(p, &n[1], ["Src(X) -> TM1:T---0.IN", "Src(T1) -> TM1:T---0.PT", "TM1:T---0.Q -> Var(Q1)"]);
+    let (i, _) = pins(block(&n[2], "0---T"));
+    assert_eq!(i[0], (Some("IN".into()), false, Some(Edge::Falling)));
+}
+
+#[test]
+fn f6_limits_alarm_fbd() {
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        "VAR_INPUT H, X, L, EPS : REAL; END_VAR VAR_OUTPUT QH, Q, QL : BOOL; END_VAR VAR HIGH_ALARM, LOW_ALARM : HYSTERESIS; END_VAR",
+        r#"
+                                    HIGH_ALARM
+                                  +------------+
+                                  | HYSTERESIS |
+X------------------------+--------|XIN1       Q|--+----------QH
+                  +---+  |        |            |  |
+H-----------------| - |--|--------|XIN2        |  |
+               +--|   |  |        |            |  |
+               |  +---+  |  +-----|EPS         |  |  +-----+
+       +---+   |         |  |     +------------+  +--| >=1 |
+EPS----| / |---+---------|--+                        |     |---Q
+2.0----|   |   |         |  |      LOW_ALARM      +--|     |
+       +---+   |         |  |     +------------+  |  +-----+
+               |  +---+  |  |     | HYSTERESIS |  |
+L-----------------| + |--|--|-----|XIN1       Q|--+----------QL
+               |  |   |  +--|-----|XIN2        |
+               +--|   |     |     |            |
+                  +---+     +-----|EPS         |
+                                  +------------+
+"#,
+    ))
+    .ok();
+    let g = p.graphic();
+    assert_eq!(g.networks.len(), 1);
+    assert_nets!(
+        p,
+        &g.networks[0],
+        [
+            "Src(X) -> HIGH_ALARM:HYSTERESIS.XIN1, LOW_ALARM:HYSTERESIS.XIN2",
+            "Src(H) -> -.in0",
+            "Src(EPS) -> /.in0",
+            "Src(2.0) -> /.in1",
+            "/.out0 -> +.in1, -.in1, HIGH_ALARM:HYSTERESIS.EPS, LOW_ALARM:HYSTERESIS.EPS",
+            "-.out0 -> HIGH_ALARM:HYSTERESIS.XIN2",
+            "Src(L) -> +.in0",
+            "+.out0 -> LOW_ALARM:HYSTERESIS.XIN1",
+            "HIGH_ALARM:HYSTERESIS.Q -> >=1.in0, Var(QH)",
+            "LOW_ALARM:HYSTERESIS.Q -> >=1.in1, Var(QL)",
+            ">=1.out0 -> Var(Q)"
+        ]
+    );
+}
+
+#[test]
+fn two_line_block_names() {
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        "VAR_INPUT X : REAL; L : ANALOG_LIMITS; END_VAR VAR_OUTPUT SE : BOOL; END_VAR VAR SIGNAL_ALARM : LIMITS_ALARM; END_VAR",
+        r#"
+       SIGNAL_ALARM
+     +--------------+
+     |   LIMITS_    |
+     |    ALARM     |
+L.HS-|H            Q|---SE
+X----|X             |
+L.LS-|L             |
+EPS--|EPS           |
+     +--------------+
+"#,
+    ))
+    .ok();
+    let nw = &p.graphic().networks[0];
+    let b = block(nw, "LIMITS_ALARM");
+    let NodeKind::Block { instance, .. } = &b.kind else { panic!() };
+    assert_eq!(instance.as_ref().unwrap().text, "SIGNAL_ALARM");
+    assert_nets!(
+        p,
+        nw,
+        [
+            "Src(L.HS) -> SIGNAL_ALARM:LIMITS_ALARM.H",
+            "Src(X) -> SIGNAL_ALARM:LIMITS_ALARM.X",
+            "Src(L.LS) -> SIGNAL_ALARM:LIMITS_ALARM.L",
+            "Src(EPS) -> SIGNAL_ALARM:LIMITS_ALARM.EPS",
+            "SIGNAL_ALARM:LIMITS_ALARM.Q -> Var(SE)"
+        ]
+    );
+}
+
+#[test]
+fn literals_and_spaced_sources() {
+    let p = parse_src(&pou(
+        "PROGRAM",
+        "VAR A : INT; S : STRING; T : TIME; END_VAR",
+        r#"
+         +------+
+T#10s ---|  :=  |---T
+         +------+
+         +------+
+'A B'----|  :=  |---S
+         +------+
+         +------+
+-1 ------|  :=  |---A
+         +------+
+"#,
+    ))
+    .ok();
+    let n = &p.graphic().networks;
+    assert_eq!(n.len(), 3);
+    assert_nets!(p, &n[0], ["Src(T#10s) -> :=.in0", ":=.out0 -> Var(T)"]);
+    assert_nets!(p, &n[1], ["Src('A B') -> :=.in0", ":=.out0 -> Var(S)"]);
+    assert_nets!(p, &n[2], ["Src(-1) -> :=.in0", ":=.out0 -> Var(A)"]);
+}
+
+#[test]
+fn action_blocks_in_ld_and_fbd_table_44() {
+    let p = parse_src(&pou(
+        "PROGRAM",
+        "VAR OK1, DN1 : BOOL; END_VAR",
+        r#"
+| S8.X %IX7.5 +---+------+---+ OK1 |
++--| |---| |--| N | ACT1 |DN1|-( )-+
+|             +---+------+---+     |
+"#,
+    ))
+    .ok();
+    let g = p.graphic();
+    assert_eq!(g.language, GraphicLanguage::Ld);
+    assert_nets!(
+        p,
+        &g.networks[0],
+        ["LeftRail -> NO(S8.X)", "NO(S8.X) -> NO(%IX7.5)", "NO(%IX7.5) -> Action(N ACT1)", "Action(N ACT1) -> Coil(OK1)", "Coil(OK1) -> RightRail"]
+    );
+    let NodeKind::ActionBlock { qualifier, time, indicator, .. } = &g.networks[0].nodes.iter().find(|n| matches!(n.kind, NodeKind::ActionBlock { .. })).unwrap().kind else { panic!() };
+    assert_eq!(*qualifier, Some(Qualifier::N));
+    assert!(time.is_none());
+    assert_eq!(p.text(indicator.as_ref().unwrap()), "DN1");
+
+    let p = parse_src(&pou(
+        "PROGRAM",
+        "VAR OK1, DN1 : BOOL; END_VAR",
+        r#"
+         +---+     +-----+------+-----+
+  S8.X---| & |-----|  L  | ACT1 | DN1 |---OK1
+%IX7.5---|   |     |T#5s |      |     |
+         +---+     +-----+------+-----+
+"#,
+    ))
+    .ok();
+    let g = p.graphic();
+    assert_eq!(g.language, GraphicLanguage::Fbd);
+    assert_nets!(p, &g.networks[0], ["Src(S8.X) -> &.in0", "Src(%IX7.5) -> &.in1", "&.out0 -> Action(L ACT1)", "Action(L ACT1) -> Var(OK1)"]);
+    let NodeKind::ActionBlock { qualifier, time, .. } = &g.networks[0].nodes.iter().find(|n| matches!(n.kind, NodeKind::ActionBlock { .. })).unwrap().kind else { panic!() };
+    assert_eq!(*qualifier, Some(Qualifier::L));
+    assert_eq!(p.text(time.as_ref().unwrap()), "T#5s");
+}
+
+#[test]
+fn errors_are_reported_not_panics() {
+    for body in [
+        "\n+--| |--\n",
+        "\n|  a\n+--| |--( )\n",
+        "\n    +---+\n----|   |\n    +---+\n",
+        "\n  +--+\n  |  |\n",
+        "\n>>\n<RETURN>\n( )\n| |\n",
+        "\n+===+\n|| ||\n+===+\n   |\n   + \n",
+        "\nX---+\n    |\n    +---<RETURN>\n    |\n",
+        "\n| a |\n+-|P|-+\n",
+        "\n        +---+\n    ----|   |----\n        +---+\n",
+    ] {
+        let p = parse_src(&pou("PROGRAM", "VAR a : BOOL; END_VAR", body));
+        let _ = p.errors;
+    }
+    // unconnected contact input and missing variable
+    let p = parse_src(&pou("PROGRAM", "VAR a : BOOL; END_VAR", "\n|\n+---| |---( )--+\n|               |\n"));
+    assert!(p.errors.iter().any(|e| e.contains("no variable")), "{:?}", p.errors);
+    let p = parse_src(&pou("PROGRAM", "VAR a : BOOL; END_VAR", "\n|  a\n+---|\n|    xyz\n"));
+    assert!(!p.errors.is_empty());
+}
