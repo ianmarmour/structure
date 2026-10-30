@@ -1,7 +1,16 @@
 [package]
 name = "structure-cli"
+description = "Command line compiler and runtime for IEC 61131-3 programs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "structure"
+path = "src/main.rs"
+
 [dependencies]
+structure-syntax = { path = "../structure-syntax" }
+structure-compiler = { path = "../structure-compiler" }
+structure-runtime = { path = "../structure-runtime" }
+clap = { version = "4", features = ["derive"] }

@@ -5,7 +5,7 @@ use crate::consteval;
 use structure_runtime::error::TrapCode;
 use structure_runtime::image::{CmpOp, Native};
 use structure_runtime::ty::{self as mty, MICROS_PER_DAY};
-use structure_syntax::ast::{self, BinaryOp, ExprKind, LiteralKind, UnaryOp};
+use structure_syntax::ast::{self, BinaryOp, ExprKind, UnaryOp};
 use structure_syntax::diag::Diagnostic;
 use structure_syntax::Ident;
 

@@ -11,6 +11,7 @@ pub mod literal;
 pub mod parser;
 pub mod source;
 pub mod token;
+pub mod writer;
 
 pub use diag::{Diagnostic, Diagnostics, Severity};
 pub use ident::Ident;
