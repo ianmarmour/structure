@@ -81,6 +81,7 @@ impl Parsed {
                 None => type_name.text.clone(),
             },
             NodeKind::Source(e) => format!("Src({})", self.text(e)),
+            NodeKind::Sink(Expr { kind: ExprKind::Name(i), .. }) => format!("Var({})", i.text),
             NodeKind::Sink(e) => format!("Var({})", self.text(e)),
             NodeKind::Jump(l) => format!("Jump({})", l.text),
             NodeKind::Return => "Return".into(),
@@ -973,7 +974,10 @@ fn block<'a>(nw: &'a Network, ty: &str) -> &'a Node {
     nw.nodes.iter().find(|n| matches!(&n.kind, NodeKind::Block { type_name, .. } if type_name.text == ty)).unwrap_or_else(|| panic!("no block {}", ty))
 }
 
-fn pins(n: &Node) -> (Vec<(Option<String>, bool, Option<Edge>)>, Vec<(Option<String>, bool, Option<Edge>)>) {
+/// (formal name, negated, edge) of each pin.
+type PinDesc = (Option<String>, bool, Option<Edge>);
+
+fn pins(n: &Node) -> (Vec<PinDesc>, Vec<PinDesc>) {
     let NodeKind::Block { inputs, outputs, .. } = &n.kind else { panic!("not a block") };
     let f = |v: &Vec<structure_syntax::graphic::BlockPin>| v.iter().map(|p| (p.name.as_ref().map(|n| n.text.clone()), p.negated, p.edge)).collect();
     (f(inputs), f(outputs))
@@ -1406,4 +1410,970 @@ fn in_out_parameters_drawn_through_blocks_figures_11_12() {
     assert_eq!(i, vec![(Some("A".into()), false, None)]);
     assert_eq!(o, vec![(Some("A".into()), false, None)]);
     assert_nets!(p, &n[2], ["Src(X3) -> INC.A", "INC.A -> Var(X4)"]);
+}
+
+// ---------------------------------------------------------------- SFC
+
+fn sfc_of(p: &Parsed) -> &Sfc {
+    let g = p.graphic();
+    assert_eq!(g.language, GraphicLanguage::Sfc);
+    g.sfc.as_deref().expect("sfc")
+}
+
+fn cond_text(p: &Parsed, c: &TransitionCondition) -> String {
+    match c {
+        TransitionCondition::St(e) => p.text(e),
+        TransitionCondition::Named => "<named>".into(),
+        TransitionCondition::Graphic(_) => "<graphic>".into(),
+        TransitionCondition::Il(_) => "<il>".into(),
+    }
+}
+
+/// "FROM -> TO : condition [priority]" for every transition.
+fn transitions(p: &Parsed) -> Vec<String> {
+    sfc_of(p)
+        .transitions
+        .iter()
+        .map(|t| {
+            let f: Vec<_> = t.from.iter().map(|s| s.text.clone()).collect();
+            let to: Vec<_> = t.to.iter().map(|s| s.text.clone()).collect();
+            let pr = t.branch_priority.map(|b| format!(" [{}]", b)).unwrap_or_default();
+            format!("{} -> {} : {}{}", f.join(","), to.join(","), cond_text(p, &t.condition), pr)
+        })
+        .collect()
+}
+
+fn steps(p: &Parsed) -> Vec<String> {
+    sfc_of(p)
+        .steps
+        .iter()
+        .map(|s| {
+            let a: Vec<String> = s
+                .associations
+                .iter()
+                .map(|a| {
+                    let mut x = format!("{}({}", a.action.text, a.qualifier.map(|q| q.as_str()).unwrap_or("-"));
+                    if let Some(t) = &a.time {
+                        x.push_str(&format!(",{}", p.text(t)));
+                    }
+                    for i in &a.indicators {
+                        x.push_str(&format!(",{}", i.text));
+                    }
+                    x.push(')');
+                    x
+                })
+                .collect();
+            format!("{}{} {}", if s.initial { "*" } else { "" }, s.name.text, a.join(" ")).trim_end().to_string()
+        })
+        .collect()
+}
+
+const SFC_DECL: &str = "VAR a, b, c, d, e, f, h, j, DN1 : BOOL; END_VAR";
+
+#[test]
+fn sfc_steps_and_transition_table_40_41() {
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        "VAR X1, X2 : BOOL; END_VAR",
+        r#"
+   +=======+
+   ||  S1 ||
+   ||     ||
+   +===+===+
+       |
+       + %IX2.4 & %IX2.3
+       |
+    +-----+
+    |STEP7|
+    +-----+
+       |
+       + TRAN78
+       |
+    +-----+
+    |STEP8|
+    +--+--+
+       |
+       + X1 OR X2
+       |
+   +---+---+
+   | STEP9 |
+   +-------+
+"#,
+    ))
+    .ok();
+    assert_eq!(steps(&p), ["*S1", "STEP7", "STEP8", "STEP9"]);
+    assert_eq!(transitions(&p), ["S1 -> STEP7 : %IX2.4 & %IX2.3", "STEP7 -> STEP8 : TRAN78", "STEP8 -> STEP9 : X1 OR X2"]);
+    let t = &sfc_of(&p).transitions[1];
+    assert!(t.name.is_none() && t.branch_priority.is_none());
+}
+
+#[test]
+fn sfc_named_transition_table_41_feature_7() {
+    let src = "FUNCTION_BLOCK X\nVAR DN1 : BOOL; END_VAR\n
++====+====+
+||  STEP7 ||
++====+====+
+     |
+     + TRAN78
+     |
++----+----+
+|  STEP8  |
++----+----+
+     |
+     + DN1
+     |
++----+----+
+|  STEP9  |
++---------+
+TRANSITION TRAN78 FROM STEP7 TO STEP8 :
+  |  %IX2.4  %IX2.3  TRAN78  |
+  +---| |-----| |-----( )----+
+  |                          |
+END_TRANSITION
+END_FUNCTION_BLOCK
+";
+    let p = parse_src(src);
+    let s = sfc_of(&p);
+    assert_eq!(s.transitions.len(), 2);
+    assert!(matches!(s.transitions[0].condition, TransitionCondition::Named));
+    assert_eq!(s.transitions[0].name.as_ref().unwrap().text, "TRAN78");
+    assert!(matches!(&s.transitions[1].condition, TransitionCondition::St(e) if matches!(&e.kind, ExprKind::Name(n) if n.text == "DN1")));
+    assert!(s.transitions[1].name.is_none());
+    // the resolution is idempotent and can be applied to a merged chart
+    let mut copy = s.clone();
+    structure_syntax::graphic::resolve_transition_names(&mut copy);
+    assert!(matches!(copy.transitions[1].condition, TransitionCondition::St(_)));
+}
+
+#[test]
+fn sfc_graphic_conditions_table_41_features_2_3_4() {
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        "VAR X : BOOL; END_VAR",
+        r#"
+                    +===+===+
+                    || S6  ||
+                    +===+===+
+                        |
+| %IX2.4  %IX2.3        |
++---| |-----| |---------+
+|                       |
+                     +--+--+
+                     |STEP7|
+                     +--+--+
+         +-------+      |
+         |   &   |      |
+%IX2.4---|       |------+
+%IX2.3---|       |      |
+         +-------+   +--+--+
+                     |STEP8|
+                     +--+--+
+                        |
+>TRANX>-----------------+
+                        |
+                     +--+--+
+                     |STEP9|
+                     +--+--+
+                        |
+                        + X
+                        |
+                     +--+--+
+                     | S10 |
+                     +-----+
+
+| %IX2.4  %IX2.3
++---| |-----| |---->TRANX>
+|
+"#,
+    ))
+    .ok();
+    let s = sfc_of(&p);
+    assert_eq!(steps(&p), ["*S6", "STEP7", "STEP8", "STEP9", "S10"]);
+    let t = transitions(&p);
+    assert_eq!(t, ["S6 -> STEP7 : <graphic>", "STEP7 -> STEP8 : <graphic>", "STEP8 -> STEP9 : <graphic>", "STEP9 -> S10 : X"]);
+    let TransitionCondition::Graphic(g) = &s.transitions[0].condition else { panic!() };
+    assert_eq!(g.language, GraphicLanguage::Ld);
+    assert_eq!(g.networks.len(), 1);
+    assert_nets!(p, &g.networks[0], ["LeftRail -> NO(%IX2.4)", "NO(%IX2.4) -> NO(%IX2.3)", "NO(%IX2.3) -> Var(TRANSITION)"]);
+    let TransitionCondition::Graphic(g) = &s.transitions[1].condition else { panic!() };
+    assert_eq!(g.language, GraphicLanguage::Fbd);
+    assert_nets!(p, &g.networks[0], ["Src(%IX2.4) -> &.in0", "Src(%IX2.3) -> &.in1", "&.out0 -> Var(TRANSITION)"]);
+    let TransitionCondition::Graphic(g) = &s.transitions[2].condition else { panic!() };
+    assert_eq!(g.language, GraphicLanguage::Ld);
+    assert_nets!(
+        p,
+        &g.networks[0],
+        ["LeftRail -> NO(%IX2.4)", "NO(%IX2.4) -> NO(%IX2.3)", "NO(%IX2.3) -> ConnOut(TRANX)", "ConnIn(TRANX) -> Var(TRANSITION)"]
+    );
+}
+
+#[test]
+fn sfc_selection_divergence_priorities_table_46() {
+    // 2a: asterisk, left-to-right priority
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        SFC_DECL,
+        r#"
+     +===+===+
+     || S5  ||
+     +===+===+
+         |
+   +-----*------+
+   |            |
+   + e          + f
+   |            |
++--+--+      +--+--+
+| S6  |      | S8  |
++-----+      +-----+
+"#,
+    ))
+    .ok();
+    assert_eq!(transitions(&p), ["S5 -> S6 : e [0]", "S5 -> S8 : f [1]"]);
+    // 2b: numbered branches
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        SFC_DECL,
+        r#"
+     +===+===+
+     || S5  ||
+     +===+===+
+         |
+   +-----*------+
+   |2           |1
+   + e          + f
+   |            |
++--+--+      +--+--+
+| S6  |      | S8  |
++-----+      +-----+
+"#,
+    ))
+    .ok();
+    assert_eq!(transitions(&p), ["S5 -> S6 : e [2]", "S5 -> S8 : f [1]"]);
+    // 2c: no priority
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        SFC_DECL,
+        r#"
+     +===+===+
+     || S5  ||
+     +===+===+
+         |
+   +-----+------+
+   |            |
+   +e           +NOT e & f
+   |            |
++--+--+      +--+--+
+| S6  |      | S8  |
++-----+      +-----+
+"#,
+    ))
+    .ok();
+    assert_eq!(transitions(&p), ["S5 -> S6 : e", "S5 -> S8 : NOT e & f"]);
+}
+
+#[test]
+fn sfc_convergences_and_simultaneous_table_46() {
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        SFC_DECL,
+        r#"
+         +===+===+
+         || S11 ||
+         +===+===+
+             |
+             + b
+             |
+    ===+=====+=====+===
+       |           |
+    +--+--+     +--+--+
+    | S12 |     | S14 |
+    +--+--+     +--+--+
+       |           |
+       + h         + j
+       |           |
+    +--+--+     +--+--+
+    | S13 |     | S15 |
+    +--+--+     +--+--+
+       |           |
+    ===+=====+=====+===
+             |
+             + d
+             |
+          +--+--+
+          | S16 |
+          +--+--+
+             |
+       +-----*-----+
+       |           |
+       + e         + f
+       |           |
+    +--+--+     +--+--+
+    | S7  |     | S9  |
+    +--+--+     +--+--+
+       |           |
+       + h         + j
+       |           |
+       +-----+-----+
+             |
+          +--+--+
+          | S10 |
+          +-----+
+"#,
+    ))
+    .ok();
+    assert_eq!(
+        transitions(&p),
+        ["S11 -> S12,S14 : b", "S12 -> S13 : h", "S14 -> S15 : j", "S13,S15 -> S16 : d", "S16 -> S7 : e [0]", "S16 -> S9 : f [1]", "S7 -> S10 : h", "S9 -> S10 : j"]
+    );
+}
+
+#[test]
+fn sfc_skip_loop_and_arrows_table_46_features_5_6_7() {
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        SFC_DECL,
+        r#"
+      +==+==+
+      || S30 ||
+      +==+==+
+         |
+         +---*---+
+         |       |
+         + a     + d
+         |       |
+      +--+--+    |
+      | S31 |    |
+      +--+--+    |
+         |       |
+         + b     |
+         |       |
+         +---+---+
+             |
+          +--+--+
+          | S33 |
+          +--+--+
+             |
+             + c
+             |
+          +--+--+
+          | S34 |<-----+
+          +--+--+      |
+             |         |
+             *-----+   |
+             |     |   |
+             + e   + f |
+             |     |   |
+          +--+--+  +->-+
+          | S35 |
+          +-----+
+"#,
+    ));
+    // `<` directly against a box is not an arrow: the loop does not reach S34
+    assert!(!p.errors.is_empty());
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        SFC_DECL,
+        r#"
+      +===+===+
+      || S30 ||
+      +===+===+
+          |
+          +---*---+
+          |       |
+          + a     + d
+          |       |
+       +--+--+    |
+       | S31 |    |
+       +--+--+    |
+          |       |
+          + b     |
+          |       |
+          +---+---+
+              |
+           +--+--+
+           | S33 |
+           +--+--+
+              |
+              + c
+              |
+              +----<----+
+              |         |
+           +--+--+      |
+           | S34 |      |
+           +--+--+      |
+              |         |
+              *-----+   |
+              |     |   |
+              + e   + f |
+              |     |   |
+           +--+--+  +->-+
+           | S35 |
+           +-----+
+"#,
+    ))
+    .ok();
+    assert_eq!(
+        transitions(&p),
+        ["S30 -> S31 : a [0]", "S30 -> S33 : d [1]", "S31 -> S33 : b", "S33 -> S34 : c", "S34 -> S35 : e [0]", "S34 -> S34 : f [1]"]
+    );
+}
+
+#[test]
+fn sfc_action_blocks_table_43() {
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        "VAR DN1 : BOOL; END_VAR",
+        r#"
+  +==+===+
+  || S7 ||
+  +==+===+
+     |
+     + DN1
+     |
+  +--+-+   +-----+----------+---+
+  | S8 |---|  L  | ACTION_1 |DN1|
+  +--+-+   |t#10s|          |   |
+     |     +-----+----------+---+
+     + DN1
+     |
+  +--+-+   +-----+---------------------+---+
+  | S9 |---|  L  |        ACTION_1     |DN1|
+  +--+-+   |t#10s|                     |   |
+     |     +-----+---------------------+---+
+     +DN1  |  P  |        ACTION_2     |   |
+     |     +-----+---------------------+---+
+     |     |  N  |        ACTION_3     |   |
+     |     +-----+---------------------+---+
+     |
+  +--+--+   +-----+----------------------+---+
+  | S10 |---| N   |      ACTION_4        |   |
+  +-----+   +-----+----------------------+---+
+            | %QX17 := %IX1 & %MX3 & S8.X ;  |
+            | FF28 (S1 := (C<D));            |
+            | %MX10 := FF28.Q;               |
+            +--------------------------------+
+"#,
+    ))
+    .ok();
+    assert_eq!(
+        steps(&p),
+        [
+            "*S7",
+            "S8 ACTION_1(L,t#10s,DN1)",
+            "S9 ACTION_1(L,t#10s,DN1) ACTION_2(P) ACTION_3(N)",
+            "S10 ACTION_4(N)",
+        ]
+    );
+    let s = sfc_of(&p);
+    assert_eq!(s.actions.len(), 1);
+    assert_eq!(s.actions[0].name.text, "ACTION_4");
+    let Body::St(stmts) = &s.actions[0].body else { panic!("{:?}", s.actions[0].body) };
+    assert_eq!(stmts.len(), 3);
+}
+
+#[test]
+fn sfc_link_errors_2_6_5() {
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        SFC_DECL,
+        r#"
+  +==+===+
+  || S1 ||
+  +==+===+
+     |
+  +--+--+
+  | S2  |
+  +--+--+
+     |
+     + a
+     |
+     + b
+     |
+  +--+--+
+  | S3  |
+  +-----+
+"#,
+    ));
+    assert!(p.errors.iter().any(|e| e.contains("linked without a transition")), "{:?}", p.errors);
+    assert!(p.errors.iter().any(|e| e.contains("two transitions")), "{:?}", p.errors);
+    // simultaneous divergence drawn with a single line
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        SFC_DECL,
+        r#"
+  +==+===+
+  || S1 ||
+  +==+===+
+     |
+     + a
+     |
+     +-------+
+     |       |
+  +--+--+ +--+--+
+  | S2  | | S3  |
+  +-----+ +-----+
+"#,
+    ));
+    assert!(p.errors.iter().any(|e| e.contains("double line")), "{:?}", p.errors);
+}
+
+#[test]
+fn f5_mix_2_brix_sfc() {
+    let src = format!(
+        "FUNCTION_BLOCK MIX_2_BRIX\n{}\n{}END_FUNCTION_BLOCK\n",
+        "VAR_INPUT ST, d, S0, S1 : BOOL; WC : WORD; z, WA, WB : INT; t1 : TIME; END_VAR\nVAR_OUTPUT DONE, VA, VB, VC, MT, MR, MP0, MP1 : BOOL; END_VAR",
+        r#"
+     +-------------->-----------------+
+     |                                |
+     |                           +====+====+   +---+------+
+     |                           || START ||---| N | DONE |
+     |                           +====+====+   +---+------+
+     |                                |
+     |                                + ST & S0 & BCD_TO_INT(WC) <= z
+     |                                |
+     |     ===+=======================+=================+=======
+     |        |                                         |
+     |   +----+----+   +---+----+                   +---+----+   +---+----+
+     |   | WEIGH_A |---| N | VA |                   | BRICK1 |---| S | MT |
+     |   +----+----+   +---+----+                   +---+----+   +---+----+
+     |        |                                         |
+     |        + BCD_TO_INT(WC) >= WA+z                  + d
+     |        |                                         |
+     |   +----+----+   +---+----+                   +---+----+
+     |   | WEIGH_B |---| N | VB |                   | DROP_1 |
+     |   +----+----+   +---+----+                   +---+----+
+     |        |                                         |
+     |        + BCD_TO_INT(WC) >= WA+WB+z               + NOT d
+     |        |                                         |
+     |     +--+---+   +---+----+                    +---+----+
+     |     | FILL |---| N | VC |                    | BRICK2 |
+     |     +--+---+   +---+----+                    +---+----+
+     |        |                                         + d
+     |        |                                     +---+----+   +---+----+
+     |        |                                     | DROP_2 |---| R | MT |
+     |        |                                     +---+----+   +---+----+
+     |        |                                         |
+     |     ===+=======================+=================+=======
+     |                                |
+     |                                + BCD_TO_INT(WC) <= z & NOT d
+     |                                |
+     |                             +--+--+   +---+----+
+     |                             | MIX |---| S | MR |
+     |                             +--+--+   +---+----+
+     |                                |
+     |                                + MIX.T >= t1
+     |                                |
+     |                             +--+--+   +---+-----+----+
+     |                             | TIP |---| N | MP1 | S1 |
+     |                             +--+--+   +---+-----+----+
+     |                                |
+     |                                + S1
+     |                                |
+     |                            +---+---+   +---+-----+----+
+     |                            | RAISE |---| R | MR  |    |
+     |                            +---+---+   +---+-----+----+
+     |                                +S0     | N | MP0 | S0 |
+     |                                |       +---+-----+----+
+     +--------------<-----------------+
+"#
+    );
+    let p = parse_src(&src).ok();
+    assert_eq!(
+        steps(&p),
+        [
+            "*START DONE(N)",
+            "WEIGH_A VA(N)",
+            "BRICK1 MT(S)",
+            "WEIGH_B VB(N)",
+            "DROP_1",
+            "FILL VC(N)",
+            "BRICK2",
+            "DROP_2 MT(R)",
+            "MIX MR(S)",
+            "TIP MP1(N,S1)",
+            "RAISE MR(R) MP0(N,S0)",
+        ]
+    );
+    assert_eq!(
+        transitions(&p),
+        [
+            "START -> WEIGH_A,BRICK1 : ST & S0 & BCD_TO_INT(WC) <= z",
+            "WEIGH_A -> WEIGH_B : BCD_TO_INT(WC) >= WA+z",
+            "BRICK1 -> DROP_1 : d",
+            "WEIGH_B -> FILL : BCD_TO_INT(WC) >= WA+WB+z",
+            "DROP_1 -> BRICK2 : NOT d",
+            "BRICK2 -> DROP_2 : d",
+            "FILL,DROP_2 -> MIX : BCD_TO_INT(WC) <= z & NOT d",
+            "MIX -> TIP : MIX.T >= t1",
+            "TIP -> RAISE : S1",
+            "RAISE -> START : S0",
+        ]
+    );
+}
+
+#[test]
+fn f7_gravel_sfc_figure_f4() {
+    let src = format!(
+        "PROGRAM GRAVEL\n{}\n{}END_PROGRAM\n",
+        "VAR_INPUT FILL_PB, LOAD_PB, BIN_EMPTY_LS : BOOL; END_VAR VAR OK_TO_RUN : BOOL; RUN_IN_TIME, RUNOUT_TIME : TIME; LEVEL_CTR : CTU; END_VAR\nVAR_OUTPUT SILO_VALVE, BIN_VALVE : BOOL; END_VAR",
+        r#"
+  +----------------->-------------------+
+  |                                     |
+  |                                +====+====+
+  |                                || START ||
+  |                                +====+====+
+  |                                     |
+  |                                     + FILL_PB & CONTROL.X
+  |                                     |
+  |                                +----+-----+   +---+------------+
+  |                                | FILL_BIN |---| N | SILO_VALVE |
+  |                                +----+-----+   +---+------------+
+  |                                     |
+  |   +---------------------------------*
+  |   |                                 |
+  |   + NOT FILL_PB OR NOT CONTROL.X    + LEVEL_CTR.Q
+  |   |                                 |
+  +---+                                 |
+  |      +--------------->--------------+
+  |      |                        +-----+-----+
+  |      |                        | LOAD_WAIT |
+  |      |                        +-----+-----+
+  |      |                              |
+  |      |                              + LOAD_PB & OK_TO_RUN
+  |      |                              |
+  |      |                          +---+----+
+  |      |                          | RUN_IN |
+  |      |                          +---+----+
+  |      |                              |
+  |      |   +--------------------------*
+  |      |   |                          |
+  |      |   + NOT OK_TO_RUN            + RUN_IN.T >= RUN_IN_TIME
+  |      |   |                          |
+  |      +---+                          |
+  |      |                         +----+-----+   +---+-----------+
+  |      |                         | DUMP_BIN |---| N | BIN_VALVE |
+  |      |                         +----+-----+   +---+-----------+
+  |      |                              |
+  |      |   +--------------------------*
+  |      |   |                          |
+  |      |   + NOT OK_TO_RUN            + BIN_EMPTY_LS
+  |      |   |                          |
+  |      +---+                          |
+  |      |                          +---+----+
+  |      |                          | RUNOUT |
+  |      |                          +---+----+
+  |      |                              |
+  |      |   +--------------------------*
+  |      |   |                          |
+  |      |   + NOT OK_TO_RUN            + RUNOUT.T >= RUNOUT_TIME
+  |      |   |                          |
+  |      +---+                          |
+  |                                     |
+  +-------------------------------------+
+"#
+    );
+    let p = parse_src(&src).ok();
+    assert_eq!(steps(&p), ["*START", "FILL_BIN SILO_VALVE(N)", "LOAD_WAIT", "RUN_IN", "DUMP_BIN BIN_VALVE(N)", "RUNOUT"]);
+    assert_eq!(
+        transitions(&p),
+        [
+            "START -> FILL_BIN : FILL_PB & CONTROL.X",
+            "FILL_BIN -> START : NOT FILL_PB OR NOT CONTROL.X [0]",
+            "FILL_BIN -> LOAD_WAIT : LEVEL_CTR.Q [1]",
+            "LOAD_WAIT -> RUN_IN : LOAD_PB & OK_TO_RUN",
+            "RUN_IN -> LOAD_WAIT : NOT OK_TO_RUN [0]",
+            "RUN_IN -> DUMP_BIN : RUN_IN.T >= RUN_IN_TIME [1]",
+            "DUMP_BIN -> LOAD_WAIT : NOT OK_TO_RUN [0]",
+            "DUMP_BIN -> RUNOUT : BIN_EMPTY_LS [1]",
+            "RUNOUT -> LOAD_WAIT : NOT OK_TO_RUN [0]",
+            "RUNOUT -> START : RUNOUT.T >= RUNOUT_TIME [1]",
+        ]
+    );
+}
+
+#[test]
+fn f7_gravel_control_sfc_figure_f5_with_fbd_action() {
+    let src = r#"PROGRAM GRAVEL
+VAR_INPUT OFF_PB, ON_PB, TRUCK_ON_RAMP, JOG_PB : BOOL; END_VAR
+VAR OK_TO_RUN, CONVEYOR_MOTOR : BOOL; BLINK_TIME : TIME; BLINK, BLANK : TON; END_VAR
+ +---------+
+ |         |
+ |         + OFF_PB
+ |         |
+ | +=======+=======+     +=====+=====+   +---+----------------+
+ | || CONTROL_OFF ||     || MONITOR ||---| N | MONITOR_ACTION |
+ | +=======+=======+     +===========+   +---+----------------+
+ |         |
+ |         + ON_PB & NOT OFF_PB
+ |         |
+ |     +---+---+   +---+---------------------------------+------+
+ |     |CONTROL|---| N |       CONTROL_ACTION            |      |
+ |     +---+---+   +---+---------------------------------+------+
+ |         |       |      +---------------------------------+   |
+ +---------+       |      |             BLINK       BLANK   |   |
+                   |      |    +-+     +-----+     +-----+  |   |
+                   |      +---O|&|     | TON |     | TON |  |   |
+                   |CONTROL.X--| |-----|IN  Q|-----|IN  Q|--+   |
+                   |           +-+  +--|PT   |  +--|PT   |      |
+                   |                |  +-----+  |  +-----+      |
+                   |    BLINK_TIME--+-----------+               |
+                   |               +-+                          |
+                   |CONTROL.X------|&|                          |
+                   |TRUCK_ON_RAMP--| |---+---------OK_TO_RUN    |
+                   |               +-+   |                      |
+                   |                     |  +-+                 |
+                   |            +-----+  +--|&|--CONVEYOR_MOTOR |
+                   |JOG_PB------| >=1 |-----| |                 |
+                   |RUN_IN.X----|     |     +-+                 |
+                   |DUMP_BIN.X--|     |                         |
+                   |RUNOUT.X----|     |                         |
+                   |            +-----+                         |
+                   +--------------------------------------------+
+END_PROGRAM
+"#;
+    let p = parse_src(src).ok();
+    assert_eq!(steps(&p), ["*CONTROL_OFF", "*MONITOR MONITOR_ACTION(N)", "CONTROL CONTROL_ACTION(N)"]);
+    // the transition below CONTROL goes up, around and down into CONTROL_OFF
+    assert_eq!(transitions(&p), ["CONTROL -> CONTROL_OFF : OFF_PB", "CONTROL_OFF -> CONTROL : ON_PB & NOT OFF_PB"]);
+    let s = sfc_of(&p);
+    assert_eq!(s.actions.len(), 1);
+    assert_eq!(s.actions[0].name.text, "CONTROL_ACTION");
+    let Body::Graphic(g) = &s.actions[0].body else { panic!() };
+    assert_eq!(g.language, GraphicLanguage::Fbd);
+    assert_eq!(g.networks.len(), 2);
+    assert_nets!(
+        p,
+        &g.networks[0],
+        [
+            "Src(CONTROL.X) -> &.in1",
+            "BLINK:TON.Q -> BLANK:TON.IN",
+            "&.out0 -> BLINK:TON.IN",
+            "BLANK:TON.Q -> &.!in0",
+            "Src(BLINK_TIME) -> BLANK:TON.PT, BLINK:TON.PT"
+        ]
+    );
+    assert_nets!(p, &g.networks[1], ["Src(CONTROL.X) -> &.in0", "Src(TRUCK_ON_RAMP) -> &.in1", "&.out0 -> &.in0, Var(OK_TO_RUN)", "&.out0 -> Var(CONVEYOR_MOTOR)", ">=1.out0 -> &.in1", "Src(JOG_PB) -> >=1.in0", "Src(RUN_IN.X) -> >=1.in1", "Src(DUMP_BIN.X) -> >=1.in2", "Src(RUNOUT.X) -> >=1.in3"]);
+}
+
+#[test]
+fn f8_agv_sfc() {
+    let src = format!(
+        "PROGRAM AGV\n{}\n{}END_PROGRAM\n",
+        "VAR_INPUT SINGLE_PB, DOUBLE_PB : BOOL; END_VAR VAR CYCLE : BOOL; END_VAR",
+        r#"
++--------------------------+
+|                          |
+|                     +====+====+
+|                     || START ||
+|                     +====+====+
+|                          |
+|       +------------------*------------+
+|       |                               |
+|       + READY.X & SINGLE_PB           + READY.X & DOUBLE_PB
+|       |                               |
+|   +---+----+ +---+-------+       +----+-----+ +---+-------+
+|   | SINGLE |-| N | CYCLE |       | DOUBLE_1 |-| N | CYCLE |
+|   +---+----+ +---+-------+       +----+-----+ +---+-------+
+|       |                               |
+|       *---------+                     + DONE.X
+|       |         |                     |
+|       |         + DONE.X & DOUBLE_PB  |
+|       |         +---------------------+
+|       |                               |
+|       + DONE.X & NOT DOUBLE_PB +------+------+
+|       |                        | DOUBLE_WAIT |
+|       |                        +------+------+
+|       |                               |
+|       |                               + READY.X
+|       |                               |
+|       |                          +----+-----+ +---+-------+
+|       |                          | DOUBLE_2 |-| N | CYCLE |
+|       |                          +----+-----+ +---+-------+
+|       |                               |
+|       |                               + DONE.X
+|       |                               |
+|       +---------------+---------------+
+|                       |
+|                 +-----+------+
+|                 | NON_REPEAT |
+|                 +-----+------+
+|                       |
+|                       +NOT(SINGLE_PB OR DOUBLE_PB)
+|                       |
++-----------------------+
+"#
+    );
+    let p = parse_src(&src).ok();
+    assert_eq!(steps(&p), ["*START", "SINGLE CYCLE(N)", "DOUBLE_1 CYCLE(N)", "DOUBLE_WAIT", "DOUBLE_2 CYCLE(N)", "NON_REPEAT"]);
+    assert_eq!(
+        transitions(&p),
+        [
+            "START -> SINGLE : READY.X & SINGLE_PB [0]",
+            "START -> DOUBLE_1 : READY.X & DOUBLE_PB [1]",
+            "DOUBLE_1 -> DOUBLE_WAIT : DONE.X",
+            "SINGLE -> DOUBLE_WAIT : DONE.X & DOUBLE_PB [1]",
+            "SINGLE -> NON_REPEAT : DONE.X & NOT DOUBLE_PB [0]",
+            "DOUBLE_WAIT -> DOUBLE_2 : READY.X",
+            "DOUBLE_2 -> NON_REPEAT : DONE.X",
+            "NON_REPEAT -> START : NOT(SINGLE_PB OR DOUBLE_PB)",
+        ]
+    );
+}
+
+// ---------------------------------------------------------------- robustness
+
+/// Random drawings made of drawing characters and short names must never
+/// make the parser panic.
+#[test]
+fn random_drawings_do_not_panic() {
+    use structure_syntax::graphic::parse_graphic;
+    use structure_syntax::source::{FileId, SourceFile};
+    let pieces = [
+        "-", "-", "-", "|", "|", "+", "+", "=", "*", " ", " ", " ", " ", "O", "<", ">", "(", ")", "/", "a", "X1", "| |", "( )", "+---+", "|IN", "Q|", ">>L",
+        "<RETURN>", ">C>", "+ x", "||", "+===+", "S1", "N", "T#1s", "'s'", "[", "]", "#", "%IX1", "-1", ":", "L:", "\t", "é",
+    ];
+    let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for _ in 0..3000 {
+        let rows = (next() % 12) as usize + 1;
+        let mut text = String::new();
+        for _ in 0..rows {
+            let n = (next() % 14) as usize;
+            for _ in 0..n {
+                text.push_str(pieces[(next() % pieces.len() as u64) as usize]);
+            }
+            text.push('\n');
+        }
+        let file = SourceFile::new(FileId(0), "fuzz", text.clone());
+        let _ = parse_graphic(&file, 0, &text);
+    }
+    // structured noise: real drawings with characters knocked out
+    let samples = [
+        "|  a     b      c  |\n+--| |---| |--( )--+\n|                  |\n",
+        "    +-----+\na---| >=1 |---c\nb---|     |\n    +-----+\n",
+        "  +==+===+\n  || S1 ||\n  +==+===+\n     |\n     + a\n     |\n  +--+--+   +---+----+\n  | S2  |---| N | A1 |\n  +-----+   +---+----+\n",
+        "     +-----*------+\n     |            |\n     + e          + f\n     |            |\n  +--+--+      +--+--+\n  | S6  |      | S8  |\n  +-----+      +-----+\n",
+    ];
+    for s in samples {
+        let chars: Vec<char> = s.chars().collect();
+        for k in 0..chars.len() {
+            for rep in [' ', '+', '-', '|', '='] {
+                let mut c = chars.clone();
+                if c[k] == '\n' {
+                    continue;
+                }
+                c[k] = rep;
+                let text: String = c.into_iter().collect();
+                let file = SourceFile::new(FileId(0), "fuzz", text.clone());
+                let _ = parse_graphic(&file, 0, &text);
+            }
+        }
+    }
+}
+
+#[test]
+fn sfc_inside_an_action_body_table_42_2s() {
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        SFC_DECL,
+        r#"
+  +==+===+
+  || S1 ||
+  +==+===+
+     |
+     + a
+     |
+  +--+--+   +---+-----------------+
+  | S2  |---| N |   OPEN_VALVE_1  |
+  +--+--+   +---+-----------------+
+     |      |                     |
+     + b    | +=======+=======+   |
+     |      | ||  V1_READY   ||   |
+  +--+--+   | +=======+=======+   |
+  | S3  |   |         |           |
+  +-----+   |         + STEP8.X   |
+            |         |           |
+            |    +----+-----+     |
+            |    |V1_OPENING|     |
+            |    +----------+     |
+            +---------------------+
+"#,
+    ))
+    .ok();
+    assert_eq!(steps(&p), ["*S1", "S2 OPEN_VALVE_1(N)", "S3"]);
+    assert_eq!(transitions(&p), ["S1 -> S2 : a", "S2 -> S3 : b"]);
+    let s = sfc_of(&p);
+    assert_eq!(s.actions.len(), 1);
+    let Body::Graphic(g) = &s.actions[0].body else { panic!() };
+    assert_eq!(g.language, GraphicLanguage::Sfc);
+    let inner = g.sfc.as_deref().unwrap();
+    assert_eq!(inner.steps.iter().map(|s| s.name.text.clone()).collect::<Vec<_>>(), ["V1_READY", "V1_OPENING"]);
+    assert!(inner.steps[0].initial);
+    assert_eq!(inner.transitions.len(), 1);
+}
+
+#[test]
+fn textual_elements_after_a_chart_are_not_part_of_the_drawing() {
+    use structure_syntax::graphic::{parse_graphic, textual_tail};
+    use structure_syntax::source::{FileId, SourceFile};
+    let text = "  +==+===+\n  || S1 ||\n  +==+===+\n     |\n     + T1\n     |\n  +--+--+\n  | S2  |\n  +-----+\nTRANSITION T1 FROM S1 TO S2 := TRUE; END_TRANSITION\n  ACTION A1: X := 1; END_ACTION\n";
+    assert_eq!(textual_tail(text), Some(9));
+    assert_eq!(textual_tail("| a |\n+-| |-+\n"), None);
+    let file = SourceFile::new(FileId(0), "t", text);
+    let (g, diags) = parse_graphic(&file, 0, text);
+    assert!(diags.iter().all(|d| d.severity != Severity::Error), "{:?}", diags);
+    let s = g.sfc.as_deref().unwrap();
+    assert_eq!(s.steps.len(), 2);
+    assert_eq!(s.transitions.len(), 1);
+    assert!(matches!(s.transitions[0].condition, TransitionCondition::Named));
+    assert_eq!(s.transitions[0].name.as_ref().unwrap().text, "T1");
+}
+
+#[test]
+fn f3_fwd_rev_mon_ld_function_blocks_with_contacts() {
+    let p = parse_src(&pou(
+        "FUNCTION_BLOCK",
+        "VAR_INPUT AUTO, ACK, AUTO_FWD, MAN_FWD, MAN_FWD_CHK, FWD_FDBK : BOOL; T_FWD_MAX : TIME; END_VAR
+VAR_OUTPUT FWD_ALRM : BOOL; END_VAR VAR FWD_MON : CMD_MONITOR; END_VAR",
+        r#"
+|                   FWD_MON                  |
+|              +---------------+             |
+| AUTO_FWD     |  CMD_MONITOR  |             |
++--| |---------|AUTO_CMD    CMD|             |
+| AUTO         |               |  FWD_ALRM   |
++--| |---------|AUTO_MODE  ALRM|-----( )-----+
+| MAN_FWD      |               |             |
++--| |---------|MAN_CMD        |             |
+| MAN_FWD_CHK  |               |             |
++--| |---------|MAN_CMD_CHK    |             |
+| FWD_FDBK     |               |             |
++--| |---------|FDBK           |             |
+| ACK          |               |             |
++--| |---------|ACK            |             |
+|              |               |             |
+| T_FWD_MAX----|T_CMD_MAX      |             |
+|              +---------------+             |
+|                                            |
+"#,
+    ))
+    .ok();
+    let g = p.graphic();
+    assert_eq!(g.language, GraphicLanguage::Ld);
+    assert_eq!(g.networks.len(), 1);
+    let nets = p.nets(&g.networks[0]);
+    for c in ["AUTO_FWD", "AUTO", "MAN_FWD", "MAN_FWD_CHK", "FWD_FDBK", "ACK"] {
+        assert!(has(&nets, &format!("LeftRail -> NO({})", c)), "{:?}", nets);
+    }
+    assert!(has(&nets, "NO(AUTO_FWD) -> FWD_MON:CMD_MONITOR.AUTO_CMD"), "{:?}", nets);
+    assert!(has(&nets, "NO(MAN_FWD_CHK) -> FWD_MON:CMD_MONITOR.MAN_CMD_CHK"), "{:?}", nets);
+    assert!(has(&nets, "Src(T_FWD_MAX) -> FWD_MON:CMD_MONITOR.T_CMD_MAX"), "{:?}", nets);
+    assert!(has(&nets, "FWD_MON:CMD_MONITOR.ALRM -> Coil(FWD_ALRM)"), "{:?}", nets);
+    let (i, o) = pins(block(&g.networks[0], "CMD_MONITOR"));
+    assert_eq!(i.len(), 7);
+    assert_eq!(o.iter().map(|x| x.0.clone().unwrap()).collect::<Vec<_>>(), ["CMD", "ALRM"]);
 }

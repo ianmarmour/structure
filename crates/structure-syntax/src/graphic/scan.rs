@@ -88,10 +88,10 @@ impl BoxRect {
 pub(crate) enum ElemKind {
     Contact(ContactKind),
     Coil(CoilKind),
-    Jump(String),
+    Jump,
     Return,
-    ConnOut(String),
-    ConnIn(String),
+    ConnOut,
+    ConnIn,
 }
 
 #[derive(Clone, Debug)]
@@ -240,11 +240,6 @@ impl<'g> Scene<'g> {
 
     pub fn is_free(&self, r: usize, c: usize) -> bool {
         self.cellu(r, c) == Cell::Free
-    }
-
-    /// A free cell holding a line character.
-    pub fn free_line(&self, r: isize, c: isize) -> bool {
-        r >= 0 && c >= 0 && self.cell(r, c) == Cell::Free && is_line_char(self.ch(r, c))
     }
 
     pub fn is_line(&self, r: isize, c: isize) -> bool {
@@ -478,8 +473,7 @@ impl<'g> Scene<'g> {
                 } else if ch == '>' && self.chu(r, c + 1) == '>' && self.lineish(r, ci - 1) {
                     let e = self.read_name(r, c + 2);
                     if e > c + 2 {
-                        let name = self.g.text(r, c + 2, e - 1);
-                        found = Some(Elem { kind: ElemKind::Jump(name), row: r, c0: c, c1: e - 1, name_cols: (c + 2, e - 1) });
+                        found = Some(Elem { kind: ElemKind::Jump, row: r, c0: c, c1: e - 1, name_cols: (c + 2, e - 1) });
                     }
                 } else if ch == '<' && self.lineish(r, ci - 1) {
                     let e = self.read_name(r, c + 1);
@@ -490,11 +484,10 @@ impl<'g> Scene<'g> {
                 } else if ch == '>' && is_ident_start(self.chu(r, c + 1)) {
                     let e = self.read_name(r, c + 1);
                     if self.chu(r, e) == '>' && self.is_free(r, e) {
-                        let name = self.g.text(r, c + 1, e - 1);
                         if self.lineish(r, ci - 1) {
-                            found = Some(Elem { kind: ElemKind::ConnOut(name), row: r, c0: c, c1: e, name_cols: (c + 1, e - 1) });
+                            found = Some(Elem { kind: ElemKind::ConnOut, row: r, c0: c, c1: e, name_cols: (c + 1, e - 1) });
                         } else if self.lineish(r, e as isize + 1) {
-                            found = Some(Elem { kind: ElemKind::ConnIn(name), row: r, c0: c, c1: e, name_cols: (c + 1, e - 1) });
+                            found = Some(Elem { kind: ElemKind::ConnIn, row: r, c0: c, c1: e, name_cols: (c + 1, e - 1) });
                         }
                     }
                 }

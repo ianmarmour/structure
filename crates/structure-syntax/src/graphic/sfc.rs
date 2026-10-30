@@ -91,7 +91,7 @@ pub fn parse_sfc(file: &SourceFile, grid: &Grid, diags: &mut Vec<Diagnostic>) ->
     let mut dfield_of: HashMap<usize, usize> = HashMap::new();
     let mut blocks = Vec::new();
     let mut action_boxes = Vec::new();
-    for i in 0..nboxes {
+    for (i, step) in is_step.iter_mut().enumerate() {
         let b = cx.s.boxes[i].clone();
         if !b.dividers.is_empty() {
             action_boxes.push(i);
@@ -103,7 +103,7 @@ pub fn parse_sfc(file: &SourceFile, grid: &Grid, diags: &mut Vec<Diagnostic>) ->
             continue;
         }
         if step_like(&cx.s, i) {
-            is_step[i] = true;
+            *step = true;
         } else {
             blocks.push(i);
             cx.scan_sides(i);
