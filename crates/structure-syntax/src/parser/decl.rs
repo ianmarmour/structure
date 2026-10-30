@@ -193,8 +193,7 @@ impl<'a> Parser<'a> {
         let start = self.span();
         self.expect(TokenKind::LParen);
         let mut elems = Vec::new();
-        loop {
-            let Some(name) = self.expect_ident("a structure element name") else { break };
+        while let Some(name) = self.expect_ident("a structure element name") {
             self.expect(TokenKind::Assign);
             let v = self.initializer();
             elems.push((name, v));
@@ -295,11 +294,8 @@ impl<'a> Parser<'a> {
         let start = self.span();
         let mut names = Vec::new();
         if self.at(TokenKind::Ident) {
-            loop {
-                match self.expect_ident("a variable name") {
-                    Some(i) => names.push(i),
-                    None => break,
-                }
+            while let Some(i) = self.expect_ident("a variable name") {
+                names.push(i);
                 if !self.eat(TokenKind::Comma) {
                     break;
                 }
@@ -392,14 +388,11 @@ impl<'a> Parser<'a> {
         }
         // Collect identifiers separated by dots; a trailing direct variable
         // or selectors finish the path.
-        loop {
-            if self.at(TokenKind::Ident) && self.kind(1) == TokenKind::Dot && self.kind(2) == TokenKind::DirectVar {
-                prefix.push(self.ident().unwrap());
-                self.bump();
-                let d = self.direct_var_token().unwrap();
-                return AccessPath { prefix, target: AccessTarget::Direct(d), span: start.to(self.prev_span()) };
-            }
-            break;
+        if self.at(TokenKind::Ident) && self.kind(1) == TokenKind::Dot && self.kind(2) == TokenKind::DirectVar {
+            prefix.push(self.ident().unwrap());
+            self.bump();
+            let d = self.direct_var_token().unwrap();
+            return AccessPath { prefix, target: AccessTarget::Direct(d), span: start.to(self.prev_span()) };
         }
         let e = self.variable_expr();
         AccessPath { prefix, target: AccessTarget::Symbolic(e), span: start.to(self.prev_span()) }
@@ -410,11 +403,8 @@ impl<'a> Parser<'a> {
         while !self.at_block_end() {
             let start = self.span();
             let mut path = Vec::new();
-            loop {
-                match self.expect_ident("an instance path") {
-                    Some(i) => path.push(i),
-                    None => break,
-                }
+            while let Some(i) = self.expect_ident("an instance path") {
+                path.push(i);
                 if !self.eat(TokenKind::Dot) {
                     break;
                 }

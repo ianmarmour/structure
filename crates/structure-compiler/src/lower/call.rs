@@ -19,6 +19,11 @@ pub struct Bound<'a> {
     pub eno: Option<(Option<&'a Expr>, bool)>,
 }
 
+
+/// Arguments bound to the inputs of a standard function: the input values
+/// (by position), EN, and the ENO target with its negation.
+type StdBinding<'a> = (Vec<Option<&'a Expr>>, Option<&'a Expr>, Option<(Option<&'a Expr>, bool)>);
+
 impl<'c, 's> Lowerer<'c, 's> {
     // ------------------------------------------------------------ binding
 
@@ -412,7 +417,7 @@ impl<'c, 's> Lowerer<'c, 's> {
     // ------------------------------------------------------------ standard functions
 
     /// Binds the arguments of a standard function to its parameters.
-    fn std_bind<'a>(&mut self, name: &Ident, f: &StdFn, args: &'a [Arg], span: Span) -> Option<(Vec<Option<&'a Expr>>, Option<&'a Expr>, Option<(Option<&'a Expr>, bool)>)> {
+    fn std_bind<'a>(&mut self, name: &Ident, f: &StdFn, args: &'a [Arg], span: Span) -> Option<StdBinding<'a>> {
         let ps = stdlib::params(f);
         let mut slots: Vec<Option<&Expr>> = vec![None; ps.fixed.len()];
         let mut en = None;
@@ -480,11 +485,9 @@ impl<'c, 's> Lowerer<'c, 's> {
             }
         }
         if let Some((_, _, min)) = ps.ext {
-            if slots.len() < ps.fixed.len() + min {
-                if positional > 0 || slots.len() < ps.fixed.len() + 1 {
-                    self.cx.error(format!("{} requires at least {} inputs", name, min + ps.fixed.len()), span);
-                    return None;
-                }
+            if slots.len() < ps.fixed.len() + min && (positional > 0 || slots.len() < ps.fixed.len() + 1) {
+                self.cx.error(format!("{} requires at least {} inputs", name, min + ps.fixed.len()), span);
+                return None;
             }
         } else if positional > 0 && positional != ps.fixed.len() {
             self.cx.error_clause("2.5.1.1", format!("{} expects {} arguments, found {}", name, ps.fixed.len(), positional), span);

@@ -130,7 +130,7 @@ pub fn coerce(types: &Types, cv: &ConstValue, ty: TypeId) -> Result<(ConstValue,
 
 pub fn describe(cv: &ConstValue) -> String {
     match cv {
-        ConstValue::Bool(b) => format!("{}", if *b { "TRUE" } else { "FALSE" }),
+        ConstValue::Bool(b) => (if *b { "TRUE" } else { "FALSE" }).to_string(),
         ConstValue::Int(i) => i.to_string(),
         ConstValue::Real(f) => f.to_string(),
         ConstValue::Time(_) => "a TIME literal".into(),
@@ -144,7 +144,10 @@ pub fn describe(cv: &ConstValue) -> String {
 
 /// Evaluates a constant expression. `enum_lookup` resolves bare
 /// identifiers given an optional expected type.
-pub fn eval(types: &Types, e: &Expr, expected: Option<TypeId>, enum_lookup: &dyn Fn(&str, Option<TypeId>) -> Result<ConstValue, String>) -> Result<Const, String> {
+/// Resolves an enumerated value written without its type.
+pub type EnumLookup<'a> = dyn Fn(&str, Option<TypeId>) -> Result<ConstValue, String> + 'a;
+
+pub fn eval(types: &Types, e: &Expr, expected: Option<TypeId>, enum_lookup: &EnumLookup) -> Result<Const, String> {
     match &e.kind {
         ExprKind::Literal(l) => {
             let v = literal_value(&l.kind)?;

@@ -80,18 +80,12 @@ impl Diagnostic {
 }
 
 /// User-controlled reporting switches ("be able to" in 1.5.1).
-#[derive(Clone, Copy, Debug)]
+#[derive(Default, Clone, Copy, Debug)]
 pub struct Policy {
     /// Report use of extensions as errors instead of warnings.
     pub extensions_are_errors: bool,
     /// Report use of implementation-dependent features as warnings.
     pub report_implementation_dependent: bool,
-}
-
-impl Default for Policy {
-    fn default() -> Self {
-        Policy { extensions_are_errors: false, report_implementation_dependent: false }
-    }
 }
 
 #[derive(Default, Clone, Debug)]

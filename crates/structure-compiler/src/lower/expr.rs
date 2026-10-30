@@ -284,11 +284,6 @@ impl<'c, 's> Lowerer<'c, 's> {
                 // (needed for enumerated values in comparisons).
                 let hint_b = if a.is_literal() || a.is_err() { hint } else { Some(a.ty) };
                 let b = self.expr(rhs, hint_b);
-                let a = if a.is_literal() || matches!(a.kind, VK::Err) {
-                    a
-                } else {
-                    a
-                };
                 self.binary(*op, a, b, e.span, lhs.span, rhs.span)
             }
         }

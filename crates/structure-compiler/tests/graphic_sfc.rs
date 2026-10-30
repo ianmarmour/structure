@@ -372,3 +372,239 @@ fn selection_divergence_table_46() {
     rt.run_for(10_000);
     assert!(!rt.errors.is_empty(), "simultaneously true transitions must be reported");
 }
+
+#[test]
+fn transition_conditions_table_41() {
+    // features 2 (LD), 3 (FBD), 4 (connector) and 7 (transition name with
+    // a textual definition in LD)
+    let src = format!(
+        r#"
+PROGRAM P
+VAR X, DN1 : BOOL; END_VAR
+                    +===+===+
+                    || S6  ||
+                    +===+===+
+                        |
+| %IX2.4  %IX2.3        |
++---| |-----| |---------+
+|                       |
+                     +--+--+
+                     |STEP7|
+                     +--+--+
+         +-------+      |
+         |   &   |      |
+%IX2.4---|       |------+
+%IX2.3---|       |      |
+         +-------+   +--+--+
+                     |STEP8|
+                     +--+--+
+                        |
+>TRANX>-----------------+
+                        |
+                     +--+--+
+                     |STEP9|
+                     +--+--+
+                        |
+                        + TRAN910
+                        |
+                     +--+--+
+                     | S10 |
+                     +-----+
+
+| %IX2.4  %IX2.3
++---| |-----| |---->TRANX>
+|
+TRANSITION TRAN910 FROM STEP9 TO S10 :
+  |  X       DN1     TRAN910  |
+  +--| |-----|/|-----( )------+
+  |                           |
+END_TRANSITION
+END_PROGRAM
+{CFG}
+"#
+    );
+    let mut rt = build(&src);
+    let x = |rt: &structure_runtime::Runtime, s: &str| boolean(rt, &format!("R.P1.{}.X", s));
+    rt.run_for(10_000);
+    assert!(x(&rt, "S6"));
+    rt.io(0, 'I')[2] = 0b0001_0000; // %IX2.4 only
+    rt.run_for(10_000);
+    assert!(x(&rt, "S6"), "LD condition: both contacts are needed");
+    rt.io(0, 'I')[2] = 0b0001_1000;
+    rt.run_for(10_000);
+    assert!(x(&rt, "STEP7"));
+    rt.run_for(10_000);
+    assert!(x(&rt, "STEP8"), "FBD condition");
+    rt.run_for(10_000);
+    assert!(x(&rt, "STEP9"), "condition through a connector");
+    set(&mut rt, "X", true);
+    set(&mut rt, "DN1", true);
+    rt.run_for(10_000);
+    assert!(x(&rt, "STEP9"), "named transition, LD definition");
+    set(&mut rt, "DN1", false);
+    rt.run_for(10_000);
+    assert!(x(&rt, "S10"));
+    assert!(rt.errors.is_empty(), "{:?}", rt.errors);
+}
+
+const ACTION_BLOCKS_43: &str = r#"
+  +==+===+
+  || S7 ||
+  +==+===+
+     |
+     + DN1
+     |
+  +--+-+   +-----+----------+---+
+  | S8 |---|  L  | ACTION_1 |DN1|
+  +--+-+   |t#10s|          |   |
+     |     +-----+----------+---+
+     + DN1
+     |
+  +--+-+   +-----+---------------------+---+
+  | S9 |---|  L  |        ACTION_1     |DN1|
+  +--+-+   |t#10s|                     |   |
+     |     +-----+---------------------+---+
+     +DN1  |  P  |        ACTION_2     |   |
+     |     +-----+---------------------+---+
+     |     |  N  |        ACTION_3     |   |
+     |     +-----+---------------------+---+
+     |
+  +--+--+   +-----+----------------------+---+
+  | S10 |---| N   |      ACTION_4        |   |
+  +-----+   +-----+----------------------+---+
+            | %QX17 := %IX1 & %MX3 & S8.X ;  |
+            | FF28 (S1 := (C<D));            |
+            | %MX10 := FF28.Q1;              |
+            +--------------------------------+
+"#;
+
+const SFC_IN_ACTION_42: &str = r#"
+  +==+===+
+  || S1 ||
+  +==+===+
+     |
+     + a
+     |
+  +--+--+   +---+-----------------+
+  | S2  |---| N |   OPEN_VALVE_1  |
+  +--+--+   +---+-----------------+
+     |      |                     |
+     + b    | +=======+=======+   |
+     |      | ||  V1_READY   ||   |
+  +--+--+   | +=======+=======+   |
+  | S3  |   |         |           |
+  +-----+   |         + c         |
+            |         |           |
+            |    +----+-----+     |
+            |    |V1_OPENING|     |
+            |    +----------+     |
+            +---------------------+
+"#;
+
+const SKIP_AND_LOOP_46: &str = r#"
+      +===+===+
+      || S30 ||
+      +===+===+
+          |
+          +---*---+
+          |       |
+          + a     + d
+          |       |
+       +--+--+    |
+       | S31 |    |
+       +--+--+    |
+          |       |
+          + b     |
+          |       |
+          +---+---+
+              |
+           +--+--+
+           | S33 |
+           +--+--+
+              |
+              + c
+              |
+              +----<----+
+              |         |
+           +--+--+      |
+           | S34 |      |
+           +--+--+      |
+              |         |
+              *-----+   |
+              |     |   |
+              + e   + f |
+              |     |   |
+           +--+--+  +->-+
+           | S35 |
+           +-----+
+"#;
+
+#[test]
+fn action_blocks_table_43_44() {
+    let src = format!(
+        r#"
+PROGRAM P
+VAR DN1, ACTION_1, ACTION_2, ACTION_3 : BOOL; C : INT := 1; D : INT := 2; FF28 : SR; END_VAR
+{ACTION_BLOCKS_43}END_PROGRAM
+{CFG}
+"#
+    );
+    let mut rt = build(&src);
+    let b = |rt: &structure_runtime::Runtime, k: &str| boolean(rt, &format!("R.P1.{}", k));
+    rt.run_for(10_000);
+    set(&mut rt, "DN1", true);
+    rt.run_for(10_000); // S7 -> S8
+    rt.run_for(10_000); // S8: ACTION_1 (L)
+    assert!(b(&rt, "ACTION_1") && b(&rt, "S9.X"));
+    rt.run_for(10_000); // S9: concatenated blocks
+    assert!(b(&rt, "ACTION_1") && b(&rt, "ACTION_2") && b(&rt, "ACTION_3"));
+    assert!(b(&rt, "S10.X"));
+    rt.run_for(10_000); // S10: ACTION_4 ("d" field in ST)
+    assert!(!b(&rt, "ACTION_1") && !b(&rt, "ACTION_2") && !b(&rt, "ACTION_3"));
+    assert!(b(&rt, "FF28.Q1"));
+    assert_eq!(rt.io(0, 'M')[1] & 0b100, 0b100, "%MX10 := FF28.Q1");
+    assert!(rt.errors.is_empty(), "{:?}", rt.errors);
+}
+
+#[test]
+fn chart_in_an_action_table_42_2s() {
+    let src = format!("PROGRAM P\nVAR a, b, c : BOOL; END_VAR\n{SFC_IN_ACTION_42}END_PROGRAM\n{CFG}\n");
+    let mut rt = build(&src);
+    let x = |rt: &structure_runtime::Runtime, s: &str| boolean(rt, &format!("R.P1.{}.X", s));
+    rt.run_for(10_000);
+    assert!(x(&rt, "S1") && !x(&rt, "V1_READY"));
+    set(&mut rt, "a", true);
+    rt.run_for(20_000);
+    assert!(x(&rt, "S2") && x(&rt, "V1_READY"));
+    set(&mut rt, "c", true);
+    rt.run_for(10_000);
+    assert!(x(&rt, "V1_OPENING") && !x(&rt, "V1_READY"));
+    set(&mut rt, "b", true);
+    rt.run_for(20_000);
+    assert!(x(&rt, "S3") && !x(&rt, "V1_OPENING"), "the included chart ends with its action");
+    assert!(rt.errors.is_empty(), "{:?}", rt.errors);
+}
+
+#[test]
+fn sequence_skip_and_loop_table_46() {
+    let src = format!("PROGRAM P\nVAR a, b, c, d, e, f : BOOL; END_VAR\n{SKIP_AND_LOOP_46}END_PROGRAM\n{CFG}\n");
+    let mut rt = build(&src);
+    let x = |rt: &structure_runtime::Runtime, s: &str| boolean(rt, &format!("R.P1.{}.X", s));
+    // sequence skip (feature 5)
+    set(&mut rt, "d", true);
+    rt.run_for(10_000);
+    assert!(x(&rt, "S33") && !x(&rt, "S31"));
+    set(&mut rt, "c", true);
+    rt.run_for(10_000);
+    assert!(x(&rt, "S34"));
+    // sequence loop (feature 6): S34 is reactivated, its time restarts
+    set(&mut rt, "f", true);
+    rt.run_for(30_000);
+    assert!(x(&rt, "S34"));
+    assert!(rt.read("R.P1.S34.T").unwrap().to_string() == "T#0s", "{}", rt.read("R.P1.S34.T").unwrap());
+    set(&mut rt, "f", false);
+    set(&mut rt, "e", true);
+    rt.run_for(10_000);
+    assert!(x(&rt, "S35"));
+    assert!(rt.errors.is_empty(), "{:?}", rt.errors);
+}

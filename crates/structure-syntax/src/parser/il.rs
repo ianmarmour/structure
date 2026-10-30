@@ -344,10 +344,8 @@ impl<'a> Parser<'a> {
             } else {
                 self.expected("':=' or '=>'");
             }
-            if !self.eat(TokenKind::Comma) {
-                if !self.at(TokenKind::RParen) {
-                    self.expected("',' or ')'");
-                }
+            if !self.eat(TokenKind::Comma) && !self.at(TokenKind::RParen) {
+                self.expected("',' or ')'");
             }
         }
         params

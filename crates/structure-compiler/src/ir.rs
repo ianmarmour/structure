@@ -148,6 +148,7 @@ impl Ex {
     pub fn bool(b: bool) -> Ex {
         Ex::Const(Ty::Bool, b as u64)
     }
+    #[allow(clippy::should_implement_trait)]
     pub fn not(e: Ex) -> Ex {
         match e {
             Ex::Const(Ty::Bool, v) => Ex::Const(Ty::Bool, v ^ 1),

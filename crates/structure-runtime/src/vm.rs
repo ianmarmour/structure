@@ -137,15 +137,13 @@ impl Context {
                 Ok(()) => {}
                 Err(code) => {
                     // Find a handler in the current routine.
-                    if let Some(t) = self.tries.last() {
-                        if t.calls == self.calls.len() {
-                            let t = self.tries.pop().unwrap();
-                            self.stack.truncate(t.stack);
-                            self.pending.truncate(t.pending);
-                            self.sp = t.sp;
-                            self.pc = t.handler;
-                            continue;
-                        }
+                    let depth = self.calls.len();
+                    if let Some(t) = self.tries.pop_if(|t| t.calls == depth) {
+                        self.stack.truncate(t.stack);
+                        self.pending.truncate(t.pending);
+                        self.sp = t.sp;
+                        self.pc = t.handler;
+                        continue;
                     }
                     return Exit::Trap(code, pc);
                 }
@@ -590,7 +588,7 @@ pub fn convert(from: Ty, to: Ty, v: u64, truncate: bool) -> R<u64> {
                     return Err(TrapCode::ConversionError);
                 }
                 let r = if truncate { x.trunc() } else { x.round_ties_even() };
-                if r < -1.8e38 || r > 1.8e38 {
+                if !(-1.8e38..=1.8e38).contains(&r) {
                     return Err(TrapCode::ConversionError);
                 }
                 from_i128(to, r as i128).ok_or(TrapCode::ConversionError)

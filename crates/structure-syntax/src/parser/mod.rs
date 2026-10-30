@@ -255,7 +255,7 @@ impl<'a> Parser<'a> {
             if let Some(problem) = check_identifier(&text) {
                 self.diags.push(Diagnostic::syntax(format!("invalid identifier '{}': {}", text, problem), t.span).with_clause("2.1.2"));
             }
-            if text.chars().any(|c| !c.is_ascii()) {
+            if !text.is_ascii() {
                 self.diags.push(
                     Diagnostic::extension(format!("identifier '{}' uses characters outside the ISO 646 IRV character set", text), t.span)
                         .with_clause("2.1.1"),

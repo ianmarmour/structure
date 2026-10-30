@@ -198,6 +198,7 @@ pub struct CompileOptions {
     pub configuration: Option<String>,
 }
 
+#[allow(clippy::large_enum_variant)] // short-lived, one per type declaration
 enum TypeState {
     Pending(ast::TypeDecl),
     InProgress,

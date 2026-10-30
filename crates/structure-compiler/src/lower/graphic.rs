@@ -89,14 +89,25 @@ impl<'c, 's> Lowerer<'c, 's> {
     pub fn graphic_condition(&mut self, out: &mut Vec<St>, g: &GraphicBody, name: Option<&Ident>) -> Ex {
         let b = self.bool_ty();
         let result = self.temp(8);
-        let key = name.map(|n| n.key()).unwrap_or_else(|| "$TRANSITION".into());
-        self.synth.insert(key.clone(), (result.clone(), b));
+        // the value of the condition is assigned to the transition name
+        // (table 41 feature 7) or reaches the transition symbol, which the
+        // parser represents by a sink named TRANSITION_MARKER
+        let mut keys = vec![structure_syntax::graphic::TRANSITION_MARKER.to_string()];
+        if let Some(n) = name {
+            keys.push(n.key());
+        }
+        for k in &keys {
+            self.synth.insert(k.clone(), (result.clone(), b));
+        }
+        out.push(St::Store(Ty::Bool, result.clone(), Ex::bool(false)));
         let units = self.merge_connectors(&g.networks);
         let labels = HashMap::new();
         for u in &units {
             self.network(out, u, &labels, Some(&result));
         }
-        self.synth.remove(&key);
+        for k in &keys {
+            self.synth.remove(k);
+        }
         Ex::Load(Ty::Bool, result)
     }
 
@@ -186,7 +197,7 @@ impl<'c, 's> Lowerer<'c, 's> {
                 if let (Some(a), Some(b)) = (into, from) {
                     if a != b {
                         let moved = list[b].clone();
-                        list[a].sinks.extend(moved.sinks.into_iter());
+                        list[a].sinks.extend(moved.sinks);
                         list[a].drivers.extend(moved.drivers.into_iter().filter(|p| p.node != i));
                         list[b] = Net::default();
                     }

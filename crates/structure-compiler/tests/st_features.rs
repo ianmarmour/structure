@@ -19,7 +19,9 @@ fn literals_table_4() {
     assert!(boolean(&rt, "R.P1.G"));
     assert!(boolean(&rt, "R.P1.H"));
     assert_eq!(real(&rt, "R.P1.R"), -1.34E-12);
-    assert!((real(&rt, "R.P1.S") - 3.1415926).abs() < 1e-6);
+    #[allow(clippy::approx_constant)] // the literal of the program under test
+    let s = 3.1415926;
+    assert!((real(&rt, "R.P1.S") - s).abs() < 1e-6);
 }
 
 #[test]

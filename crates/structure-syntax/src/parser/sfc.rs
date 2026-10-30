@@ -133,11 +133,8 @@ impl<'a> Parser<'a> {
     fn step_list(&mut self) -> Vec<Ident> {
         let mut v = Vec::new();
         if self.eat(TokenKind::LParen) {
-            loop {
-                match self.expect_ident("a step name") {
-                    Some(i) => v.push(i),
-                    None => break,
-                }
+            while let Some(i) = self.expect_ident("a step name") {
+                v.push(i);
                 if !self.eat(TokenKind::Comma) {
                     break;
                 }

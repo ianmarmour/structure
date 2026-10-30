@@ -361,6 +361,7 @@ impl<'c, 's> Linker<'c, 's> {
                 self.cfg_globals[i].addr = self.alloc(bits);
             }
         }
+        #[allow(clippy::needless_range_loop)] // the resources are modified in the loop
         for ri in 0..self.res.len() {
             for gi in 0..self.res[ri].globals.len() {
                 if self.res[ri].globals[gi].located.is_none() {
@@ -915,7 +916,7 @@ impl<'c, 's> Linker<'c, 's> {
             }
             segs.remove(0);
         }
-        let Some(first) = segs.first() else { return None };
+        let first = segs.first()?;
         let Some(prog) = self.res[ri].programs.iter().find(|p| p.name == first.key()).cloned() else {
             self.cx.error_clause("2.7.1", format!("unknown program instance {}", first), first.span);
             return None;
@@ -1021,6 +1022,7 @@ impl<'c, 's> Linker<'c, 's> {
 
     // ------------------------------------------------------------ access paths
 
+    #[allow(clippy::too_many_arguments)]
     fn add_access(&mut self, name: String, addr: u64, ty: TypeId, read_only: bool, declared: TypeId, span: Span, constant: bool) {
         if !self.cx.types.compatible(ty, declared) || (self.cx.types.is_string(ty).is_some() != self.cx.types.is_string(declared).is_some()) {
             self.cx.annex_e(
