@@ -629,3 +629,39 @@ IN2--------|   |     |T#30ms |      |
     rt.run_for(10_000);
     assert!(!b(&rt, "ACT1"));
 }
+
+#[test]
+fn annex_e_errors_of_networks() {
+    // 4.1.1: connector label used as an element name
+    let e = errors(&format!(
+        r#"PROGRAM P
+VAR A, B, C : BOOL; END_VAR
+    +---+
+A---| & |---------->C>
+B---|   |
+    +---+
+
+>C>----------C
+END_PROGRAM
+{CFG}
+"#
+    ));
+    assert!(e.contains("connector label C is the same as the name of another element"), "{}", e);
+    // 4.1.3: feedback loop without a feedback variable
+    let e = errors(&format!(
+        r#"PROGRAM P
+VAR ENABLE, START1 : BOOL; END_VAR
+                    +---+
+           ENABLE---| & |---+
+                +---|   |   |
+         +---+  |   +---+   |
+START1---|>=1|--+           |
+      +--|   |              |
+      |  +---+              |
+      +---------------------+
+END_PROGRAM
+{CFG}
+"#
+    ));
+    assert!(e.contains("feedback path without a feedback variable"), "{}", e);
+}
